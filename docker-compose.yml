@@ -1,0 +1,21 @@
+services:
+  # Streamlit App (Backend + UI)
+  app:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ro-ed-lang-app
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./backend/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./backend:/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

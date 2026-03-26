@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""
+STEP 4B: Self-Review Agent
+Dash Agent reviews its own extraction output and corrects mistakes.
+Common fixes: decimal vs percentage, missing units, formatting errors.
+"""
+
+import json
+import time
+import requests
+import config
+
+REVIEW_PROMPT = """You are a quality review agent. Below is extracted data from a Myanmar customs import document.
+Review it for errors and fix any issues.
+
+COMMON ERRORS TO CHECK:
+1. Customs duty rate should be DECIMAL (0.15 not 15). If > 1.0, divide by 100.
+2. Commercial tax % should be DECIMAL (0.05 not 5). If > 1.0, divide by 100.
+3. Quantity should include UNIT (e.g., "16200KG" not "16200").
+4. Invoice unit price should include UNIT (e.g., "69.1358THB" not "69.1358").
+5. Exchange Rate should include CURRENCY (e.g., "THB 65.0025" not "65.0025").
+6. Financial amounts in declaration should be NUMBERS (no commas, no currency symbols).
+7. Declaration date should be YYYY-MM-DD format.
+8. All fields must be non-empty. Use 0 for missing numeric fields.
+
+EXTRACTED DATA:
+{extracted_json}
+
+Return a JSON object with EXACTLY this structure:
+{{
+  "corrections": [
+    {{"item_index": 0, "field": "Customs duty rate", "old_value": 15, "new_value": 0.15, "reason": "Was percentage, converted to decimal"}},
+  ],
+  "declaration_corrections": [
+    {{"field": "Declaration Date", "old_value": "14/10/2025", "new_value": "2025-10-14", "reason": "Fixed date format"}}
+  ],
+  "corrected_items": [... full corrected items array ...],
+  "corrected_declaration": {{... full corrected declaration object ...}}
+}}
+
+If no corrections needed, return empty corrections arrays but still return the full data.
+Return ONLY valid JSON."""
+
+
+def self_review(extracted_data):
+    """Review extraction output and correct common errors."""
+
+    print("=" * 60)
+    print("  STEP 4B: SELF-REVIEW AGENT")
+    print("=" * 60)
+
+    if not extracted_data:
+        print("  No data to review")
+        return extracted_data
+
+    items = extracted_data.get('items', [])
+    declaration = extracted_data.get('declaration', {})
+
+    if not items and not declaration:
+        print("  No items or declaration to review")
+        return extracted_data
+
+    # Build review payload
+    review_data = {
+        "items": items,
+        "declaration": declaration
+    }
+
+    prompt = REVIEW_PROMPT.format(extracted_json=json.dumps(review_data, indent=2, default=str))
+
+    payload = {
+        "model": config.REVIEW_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "max_tokens": 6000
+    }
+
+    print(f"  Reviewing {len(items)} items + declaration...")
+    print("  Talking to LLM...", end=" ")
+    start_time = time.time()
+
+    # Call with retry
+    response = None
+    for attempt in range(config.MAX_RETRIES):
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=config.API_TIMEOUT
+            )
+            if response.status_code == 200:
+                break
+        except Exception:
+            pass
+        if attempt < config.MAX_RETRIES - 1:
+            wait = config.RETRY_BACKOFF_BASE ** (attempt + 1)
+            time.sleep(wait)
+
+    duration = time.time() - start_time
+
+    if not response or response.status_code != 200:
+        print(f"FAILED — keeping original data")
+        return extracted_data
+
+    try:
+        import re
+        content_text = response.json()["choices"][0]["message"]["content"]
+        cleaned = re.sub(r'```json\n?|```\n?', '', content_text).strip()
+
+        if '{' in cleaned:
+            start_idx = cleaned.index('{')
+            end_idx = cleaned.rindex('}') + 1
+            review_result = json.loads(cleaned[start_idx:end_idx])
+        else:
+            print(f"No JSON in response — keeping original")
+            return extracted_data
+
+        corrections = review_result.get('corrections', [])
+        decl_corrections = review_result.get('declaration_corrections', [])
+
+        print(f"Done ({duration:.1f}s)")
+        print()
+
+        # Log corrections
+        if corrections:
+            print(f"  Corrections found: {len(corrections)} item fields")
+            for c in corrections:
+                print(f"    Item {c.get('item_index', '?')}: {c.get('field', '?')} — {c.get('old_value', '?')} → {c.get('new_value', '?')} ({c.get('reason', '')})")
+        if decl_corrections:
+            print(f"  Declaration corrections: {len(decl_corrections)} fields")
+            for c in decl_corrections:
+                print(f"    {c.get('field', '?')} — {c.get('old_value', '?')} → {c.get('new_value', '?')} ({c.get('reason', '')})")
+
+        if not corrections and not decl_corrections:
+            print("  No corrections needed — data looks clean")
+
+        # Apply corrections
+        corrected_items = review_result.get('corrected_items', items)
+        corrected_declaration = review_result.get('corrected_declaration', declaration)
+
+        # Update extracted data
+        result = dict(extracted_data)
+        result['items'] = corrected_items
+        result['declaration'] = corrected_declaration
+        result['review_corrections'] = len(corrections) + len(decl_corrections)
+        result['review_details'] = corrections + decl_corrections
+        result['review_duration'] = duration
+
+        print()
+        print(f"  Review complete: {len(corrections) + len(decl_corrections)} corrections applied")
+        print("=" * 60)
+
+        return result
+
+    except Exception as e:
+        print(f"Parse error: {str(e)[:100]} — keeping original data")
+        return extracted_data
+
+
+if __name__ == "__main__":
+    # Test with existing extraction
+    claude_file = config.RESULTS_DIR / 'claude_extracted.json'
+    if claude_file.exists():
+        with open(claude_file) as f:
+            data = json.load(f)
+        result = self_review(data)
+        print(f"\nCorrections: {result.get('review_corrections', 0)}")

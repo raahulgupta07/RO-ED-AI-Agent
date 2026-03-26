@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (will be mounted as volume)
+data/
+
+# Documentation
+*.md
+CLAUDE.md
+
+# Docker
+docker-start.sh
+docker-compose.yml
+Dockerfile
+
+# Environment (will be passed via docker-compose)
+.env
+.env.example

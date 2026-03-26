@@ -1,0 +1,14 @@
+# PDF Processing
+PyMuPDF==1.23.8
+
+# API Communication
+requests==2.31.0
+
+# Data Processing & Excel
+pandas==2.1.4
+openpyxl==3.1.2
+xlsxwriter==3.1.9
+
+# Web UI
+streamlit==1.31.1
+streamlit-shadcn-ui==0.1.19
