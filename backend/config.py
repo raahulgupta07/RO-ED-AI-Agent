@@ -36,8 +36,13 @@ if not API_KEY:
         with open(env_file) as f:
             for line in f:
                 if line.startswith("OPENROUTER_API_KEY"):
-                    API_KEY = line.split("=")[1].strip().strip('"')
+                    API_KEY = line.split("=", 1)[1].strip().strip('"')
                     break
+
+# Validate API key at startup
+if not API_KEY or API_KEY == "sk-or-v1-your-openrouter-key-here":
+    import logging
+    logging.warning("OPENROUTER_API_KEY not set or still placeholder — API calls will fail")
 
 # ============================================================================
 # MODEL CONFIGURATION

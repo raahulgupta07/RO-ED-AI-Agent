@@ -1,11 +1,14 @@
 # Secrets
 backend/.env
 .env
+*.key
+*.pem
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
 
 # Data (user uploads and results)
 backend/data/uploads/
@@ -25,3 +28,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Logs
+*.log

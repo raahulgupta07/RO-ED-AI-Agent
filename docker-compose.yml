@@ -1,5 +1,4 @@
 services:
-  # Streamlit App (Backend + UI)
   app:
     build:
       context: ./backend
@@ -13,9 +12,22 @@ services:
       - PYTHONUNBUFFERED=1
     volumes:
       - ./backend:/app
+      - app-data:/app/data
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/_stcore/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+volumes:
+  app-data:
+    driver: local

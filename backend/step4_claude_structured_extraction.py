@@ -37,7 +37,7 @@ FORMAT 2: DOCUMENT HEADER (Single record for entire declaration)
 
 Extract these 16 fields from the customs declaration pages:
 
-1. Declaration No: Declaration/Entry number (e.g., "100313868761")
+1. Declaration No: Declaration/Entry number (numeric string found on the document)
 2. Declaration Date: Date in YYYY-MM-DD format (e.g., "2025-10-14")
 3. Importer (Name): Company name of importer
 4. Consignor (Name): Company name of consignor/shipper
@@ -60,31 +60,31 @@ Return ONLY this exact JSON structure:
 
 {{
   "declaration": {{
-    "Declaration No": "100313868761",
-    "Declaration Date": "2025-10-14",
-    "Importer (Name)": "COMPANY NAME",
-    "Consignor (Name)": "COMPANY NAME",
-    "Invoice Number": "INV-001",
-    "Invoice Price ": 1118432.0,
-    "Currency": "THB",
-    "Exchange Rate": 65.0025,
-    "Currency.1": "MMK",
-    "Total Customs Value ": 72802800.0,
-    "Import/Export Customs Duty ": 10920419.0,
+    "Declaration No": "<extract from document>",
+    "Declaration Date": "<YYYY-MM-DD from document>",
+    "Importer (Name)": "<extract from document>",
+    "Consignor (Name)": "<extract from document>",
+    "Invoice Number": "<extract from document>",
+    "Invoice Price ": 0.0,
+    "Currency": "<e.g. THB, USD>",
+    "Exchange Rate": 0.0,
+    "Currency.1": "<e.g. MMK>",
+    "Total Customs Value ": 0.0,
+    "Import/Export Customs Duty ": 0.0,
     "Commercial Tax (CT)": 0.0,
-    "Advance Income Tax (AT)": 1456055.0,
-    "Security Fee (SF)": 20000.0,
-    "MACCS Service Fee (MF)": 30000.0,
+    "Advance Income Tax (AT)": 0.0,
+    "Security Fee (SF)": 0.0,
+    "MACCS Service Fee (MF)": 0.0,
     "Exemption/Reduction": 0.0
   }},
   "items": [
     {{
-      "Item name": "PRODUCT (BRAND: NAME) (C/O: COUNTRY)",
-      "Customs duty rate": 0.15,
-      "Quantity (1)": "2400KG",
-      "Invoice unit price": "129.521KG",
-      "Commercial tax %": 0.05,
-      "Exchange Rate (1)": "THB 64.398"
+      "Item name": "<PRODUCT NAME (BRAND: NAME) (C/O: COUNTRY)>",
+      "Customs duty rate": 0.0,
+      "Quantity (1)": "<NUMBER+UNIT e.g. 2400KG>",
+      "Invoice unit price": "<PRICE+UNIT e.g. 129.521THB>",
+      "Commercial tax %": 0.0,
+      "Exchange Rate (1)": "<CURRENCY RATE e.g. THB 64.398>"
     }}
   ]
 }}

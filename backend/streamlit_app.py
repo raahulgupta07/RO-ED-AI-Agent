@@ -17,6 +17,8 @@ import json
 import pandas as pd
 from io import BytesIO
 import fitz
+import plotly.graph_objects as go
+import plotly.express as px
 
 # Backend imports
 import database
@@ -135,8 +137,423 @@ st.markdown("""
     .terminal-log .step-detail {
         color: #94a3b8;
     }
+    /* Login page styling */
+    .login-container {
+        max-width: 420px;
+        margin: 80px auto;
+        padding: 2.5rem;
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+        border: 1px solid var(--brand-border);
+    }
+    .login-header {
+        text-align: center;
+        margin-bottom: 1.5rem;
+    }
+    .login-header h2 {
+        color: #1e293b;
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+    .login-header p {
+        color: #64748b;
+        font-size: 0.9rem;
+    }
+    .user-badge {
+        display: inline-block;
+        padding: 2px 10px;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    .user-badge.admin { background: #fee2e2; color: #dc2626 !important; }
+    .user-badge.user { background: #dbeafe; color: #2563eb !important; }
+
+    /* Compact sidebar metric cards */
+    [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+        margin-bottom: -12px;
+    }
+    [data-testid="stSidebar"] iframe {
+        height: 60px !important;
+        min-height: 60px !important;
+    }
+    .sidebar-user-info {
+        background: rgba(255,255,255,0.08);
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin-bottom: 4px;
+    }
+    .sidebar-user-info .name {
+        color: #ffffff !important;
+        font-weight: 600;
+        font-size: 0.95rem;
+    }
+    .sidebar-user-info .role-label {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        margin-left: 6px;
+    }
+    .sidebar-user-info .role-admin { background: #f87171; color: #fff !important; }
+    .sidebar-user-info .role-user { background: #60a5fa; color: #fff !important; }
     </style>
 """, unsafe_allow_html=True)
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+# Session timeout (seconds)
+SESSION_TIMEOUT = 3600  # 1 hour
+AUTH_SESSION_FILE = config.RESULTS_DIR / '_auth_session.json'
+
+import html as _html
+
+def _save_auth_to_disk(user, remember_me=False):
+    """Persist auth session to disk so it survives refresh."""
+    session_data = {
+        'user_id': user['id'],
+        'username': user['username'],
+        'role': user['role'],
+        'display_name': user.get('display_name', ''),
+        'remember_me': remember_me,
+        'login_time': time.time(),
+    }
+    with open(AUTH_SESSION_FILE, 'w') as f:
+        json.dump(session_data, f)
+
+def _load_auth_from_disk():
+    """Restore auth session from disk after refresh."""
+    if not AUTH_SESSION_FILE.exists():
+        return None
+    try:
+        with open(AUTH_SESSION_FILE, 'r') as f:
+            data = json.load(f)
+        # Check timeout
+        elapsed = time.time() - data.get('login_time', 0)
+        if elapsed > SESSION_TIMEOUT and not data.get('remember_me'):
+            AUTH_SESSION_FILE.unlink()
+            return None
+        return data
+    except Exception:
+        return None
+
+def _clear_auth_from_disk():
+    """Remove persisted auth session."""
+    if AUTH_SESSION_FILE.exists():
+        AUTH_SESSION_FILE.unlink()
+
+# Init auth state
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'user' not in st.session_state:
+    st.session_state.user = None
+if 'remember_me' not in st.session_state:
+    st.session_state.remember_me = False
+if 'login_time' not in st.session_state:
+    st.session_state.login_time = None
+
+database.init_database()
+
+# Restore auth from disk if session_state lost (browser refresh)
+if not st.session_state.authenticated:
+    saved_auth = _load_auth_from_disk()
+    if saved_auth:
+        # Verify user still exists and is active in DB
+        all_users = database.get_all_users()
+        valid_user = next(
+            (u for u in all_users
+             if u['id'] == saved_auth['user_id'] and u['is_active']),
+            None
+        )
+        if valid_user:
+            st.session_state.authenticated = True
+            st.session_state.user = {
+                'id': valid_user['id'],
+                'username': valid_user['username'],
+                'role': valid_user['role'],
+                'display_name': valid_user.get('display_name', ''),
+            }
+            st.session_state.remember_me = saved_auth.get('remember_me', False)
+            st.session_state.login_time = saved_auth.get('login_time', time.time())
+        else:
+            # User deleted or disabled — clear stale session
+            _clear_auth_from_disk()
+
+# Session timeout check (for already-authenticated sessions)
+if st.session_state.authenticated and st.session_state.login_time:
+    elapsed = time.time() - st.session_state.login_time
+    if elapsed > SESSION_TIMEOUT and not st.session_state.remember_me:
+        st.session_state.authenticated = False
+        st.session_state.user = None
+        st.session_state.login_time = None
+        _clear_auth_from_disk()
+
+def render_login_page():
+    """Render the login page."""
+    # Hide sidebar on login
+    st.markdown("<style>[data-testid='stSidebar']{display:none;}</style>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="login-header" style="text-align:center; margin-top:60px;">
+        <h2 style="font-size:2rem;">RO-ED AI Agent</h2>
+        <p style="color:#64748b;">Myanmar Import PDF Data Extraction Pipeline</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns([1, 1.2, 1])
+    with col2:
+        st.markdown("#### Sign In")
+
+        username = st.text_input("Username", key="login_username", placeholder="Enter username")
+
+        password = st.text_input(
+            "Password",
+            type="password",
+            key="login_password",
+            placeholder="Enter password"
+        )
+
+        remember = st.checkbox("Remember me", key="login_remember")
+
+        if st.button("Sign In", type="primary", use_container_width=True):
+            if username and password:
+                user = database.authenticate_user(username, password)
+                if user:
+                    st.session_state.authenticated = True
+                    st.session_state.user = user
+                    st.session_state.remember_me = remember
+                    st.session_state.login_time = time.time()
+                    _save_auth_to_disk(user, remember)
+                    database.log_activity(user['id'], user['username'], "LOGIN", "Signed in")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password")
+            else:
+                st.warning("Please enter username and password")
+
+        st.markdown("---")
+        st.caption("Contact your administrator for credentials")
+        st.caption("Created by City AI Team")
+
+
+def _render_activity_log():
+    """Render the Activity Log view for admins."""
+    st.subheader("Activity Log")
+    st.caption("Track who did what across the system")
+
+    # Filters
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        users_list = database.get_all_users()
+        user_options = ["All Users"] + [u['username'] for u in users_list]
+        log_user_filter = st.selectbox("Filter by user", options=user_options, key="log_user_filter")
+    with f2:
+        action_logs = database.get_activity_logs(limit=500)
+        action_types = sorted(set(l['action'] for l in action_logs)) if action_logs else []
+        log_action_filter = st.selectbox("Filter by action", options=["All Actions"] + action_types, key="log_action_filter")
+    with f3:
+        log_date_range = st.date_input("Filter by date", value=[], key="log_date_range")
+
+    # Fetch logs
+    filter_uid = None
+    if log_user_filter != "All Users":
+        match = [u for u in users_list if u['username'] == log_user_filter]
+        if match:
+            filter_uid = match[0]['id']
+
+    logs = database.get_activity_logs(limit=500, user_id=filter_uid)
+
+    # Apply action filter
+    if log_action_filter != "All Actions":
+        logs = [l for l in logs if l['action'] == log_action_filter]
+
+    # Apply date filter
+    if log_date_range and len(log_date_range) == 2:
+        d_start, d_end = str(log_date_range[0]), str(log_date_range[1])
+        logs = [l for l in logs if d_start <= (l.get('created_at') or '')[:10] <= d_end]
+
+    # Metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        ui.metric_card(title="Total Events", content=str(len(logs)), key="log_total")
+    with col2:
+        login_count = sum(1 for l in logs if l['action'] == 'LOGIN')
+        ui.metric_card(title="Logins", content=str(login_count), key="log_logins")
+    with col3:
+        job_count = sum(1 for l in logs if l['action'] == 'RUN_JOB')
+        ui.metric_card(title="Jobs Run", content=str(job_count), key="log_jobs")
+
+    st.markdown("---")
+
+    if logs:
+        # Action icon mapping
+        action_icons = {
+            'LOGIN': '🔑', 'LOGOUT': '🚪', 'RUN_JOB': '⚡',
+            'DOWNLOAD': '📥', 'DELETE_JOB': '🗑️', 'CREATE_USER': '👤',
+            'UPDATE_USER': '✏️', 'DELETE_USER': '❌',
+        }
+
+        logs_df = pd.DataFrame([{
+            "": action_icons.get(l['action'], '📋'),
+            "Time": (l.get('created_at') or '')[:19],
+            "User": l.get('username', 'N/A'),
+            "Action": l.get('action', ''),
+            "Detail": (l.get('detail') or '')[:80],
+        } for l in logs])
+        st.dataframe(logs_df, use_container_width=True, hide_index=True)
+        st.caption(f"Showing {len(logs)} events")
+    else:
+        st.info("No activity logged yet")
+
+
+def render_admin_user_management():
+    """Render the User Management tab for admins — users + activity log."""
+    st.header("User Management")
+
+    um_section = ui.tabs(
+        options=["Users", "Activity Log"],
+        default_value="Users",
+        key="um_tabs"
+    )
+
+    if um_section == "Activity Log":
+        _render_activity_log()
+        return
+
+    users = database.get_all_users()
+
+    # Metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        ui.metric_card(title="Total Users", content=str(len(users)), key="um_total")
+    with col2:
+        admins = sum(1 for u in users if u['role'] == 'admin')
+        ui.metric_card(title="Admins", content=str(admins), key="um_admins")
+    with col3:
+        active = sum(1 for u in users if u['is_active'])
+        ui.metric_card(title="Active", content=str(active), key="um_active")
+
+    st.markdown("---")
+
+    # Create new user form
+    st.subheader("Create New User")
+    with st.form("create_user_form", clear_on_submit=True):
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            new_username = st.text_input("Username", placeholder="e.g. john.doe")
+            new_display = st.text_input("Display Name", placeholder="e.g. John Doe")
+        with fc2:
+            new_password = st.text_input("Password", type="password", placeholder="Min 4 characters")
+            new_role = st.selectbox("Role", options=["user", "admin"])
+
+        submitted = st.form_submit_button("Create User", type="primary", use_container_width=True)
+        if submitted:
+            import re as _re
+            if not new_username or not new_password:
+                st.error("Username and password are required")
+            elif not _re.match(r'^[a-zA-Z0-9._-]{3,32}$', new_username):
+                st.error("Username must be 3-32 characters (letters, numbers, . _ - only)")
+            elif len(new_password) < 6:
+                st.error("Password must be at least 6 characters")
+            else:
+                success = database.create_user(new_username, new_password, new_display or new_username, new_role)
+                if success:
+                    database.log_activity(
+                        st.session_state.user['id'], st.session_state.user['username'],
+                        "CREATE_USER", f"Created {new_role} user: {new_username}"
+                    )
+                    st.success(f"User **{new_username}** created as **{new_role}**")
+                    st.rerun()
+                else:
+                    st.error(f"Username **{new_username}** already exists")
+
+    st.markdown("---")
+
+    # Users table
+    st.subheader("All Users")
+
+    if users:
+        users_df = pd.DataFrame([{
+            "Username": u['username'],
+            "Display Name": u['display_name'] or u['username'],
+            "Role": u['role'].upper(),
+            "Active": "Yes" if u['is_active'] else "No",
+            "Created": (u.get('created_at') or '')[:19],
+            "Last Login": (u.get('last_login') or 'Never')[:19],
+        } for u in users])
+        st.dataframe(users_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Edit/delete users
+    st.subheader("Manage User")
+
+    user_options = [f"{u['username']} ({u['role']})" for u in users]
+    selected_user_label = st.selectbox("Select user", options=user_options, key="manage_user_select")
+
+    if selected_user_label:
+        sel_idx = user_options.index(selected_user_label)
+        sel_user = users[sel_idx]
+
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            edit_display = st.text_input("Display Name", value=sel_user['display_name'] or '', key="edit_display")
+            edit_role = st.selectbox("Role", options=["user", "admin"],
+                                     index=0 if sel_user['role'] == 'user' else 1, key="edit_role")
+        with ec2:
+            edit_active = st.selectbox("Status", options=["Active", "Disabled"],
+                                        index=0 if sel_user['is_active'] else 1, key="edit_active")
+            edit_password = st.text_input("New Password (leave blank to keep)", type="password", key="edit_password")
+
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            if st.button("Save Changes", type="primary", use_container_width=True):
+                database.update_user(
+                    sel_user['id'],
+                    display_name=edit_display if edit_display else None,
+                    role=edit_role,
+                    is_active=1 if edit_active == "Active" else 0,
+                    password=edit_password if edit_password else None
+                )
+                database.log_activity(
+                    st.session_state.user['id'], st.session_state.user['username'],
+                    "UPDATE_USER", f"Updated user: {sel_user['username']} (role={edit_role}, active={edit_active})"
+                )
+                st.success(f"User **{sel_user['username']}** updated")
+                st.rerun()
+        with bc2:
+            # Don't allow deleting yourself or the last admin
+            is_self = sel_user['username'] == st.session_state.user['username']
+            is_last_admin = sel_user['role'] == 'admin' and sum(1 for u in users if u['role'] == 'admin') <= 1
+
+            if is_self:
+                st.button("Delete User", disabled=True, use_container_width=True, key="del_user_btn")
+                st.caption("Cannot delete yourself")
+            elif is_last_admin:
+                st.button("Delete User", disabled=True, use_container_width=True, key="del_user_btn")
+                st.caption("Cannot delete last admin")
+            else:
+                if st.button("Delete User", type="secondary", use_container_width=True, key="del_user_btn"):
+                    database.delete_user(sel_user['id'])
+                    database.log_activity(
+                        st.session_state.user['id'], st.session_state.user['username'],
+                        "DELETE_USER", f"Deleted user: {sel_user['username']}"
+                    )
+                    st.success(f"User **{sel_user['username']}** deleted")
+                    st.rerun()
+
+
+# Check authentication — show login or app
+if not st.session_state.authenticated:
+    render_login_page()
+    st.stop()
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -578,7 +995,7 @@ def render_job_results(job_data, prefix="saved"):
                         elif v >= 0.7: return 'background-color: #fef9c3'
                         else: return 'background-color: #fecaca'
                     except: return ''
-                st.dataframe(conf_df.style.applymap(_color_conf), use_container_width=True, hide_index=True)
+                st.dataframe(conf_df.style.map(_color_conf), use_container_width=True, hide_index=True)
                 st.caption("Green = high (>=0.9) | Yellow = medium (0.7-0.9) | Red = low (<0.7)")
 
     # ══════════════════════════════════════════════════════════════
@@ -701,7 +1118,72 @@ def render_job_results(job_data, prefix="saved"):
             acc_data.append({'Source': source, 'Field': display_name, 'Valid': fs.get('valid', 0),
                            'Total': fs.get('total', 0), 'Accuracy %': f"{ap:.1f}",
                            'Status': 'PASS' if ap >= 80 else 'REVIEW'})
+
         if acc_data:
+            # Plotly charts
+            chart_col1, chart_col2 = st.columns([1, 2])
+
+            with chart_col1:
+                # Gauge chart — overall accuracy
+                fig_gauge = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=job_data['accuracy'],
+                    number={'suffix': '%', 'font': {'size': 36}},
+                    gauge={
+                        'axis': {'range': [0, 100], 'tickwidth': 1},
+                        'bar': {'color': '#2563eb'},
+                        'bgcolor': '#f1f5f9',
+                        'steps': [
+                            {'range': [0, 30], 'color': '#fee2e2'},
+                            {'range': [30, 60], 'color': '#fef3c7'},
+                            {'range': [60, 90], 'color': '#dbeafe'},
+                            {'range': [90, 100], 'color': '#dcfce7'},
+                        ],
+                        'threshold': {
+                            'line': {'color': '#10b981', 'width': 3},
+                            'thickness': 0.8,
+                            'value': 90
+                        }
+                    }
+                ))
+                fig_gauge.update_layout(
+                    height=220, margin=dict(l=20, r=20, t=30, b=10),
+                    paper_bgcolor='rgba(0,0,0,0)', font={'color': '#1e293b'}
+                )
+                st.plotly_chart(fig_gauge, use_container_width=True)
+
+            with chart_col2:
+                # Horizontal bar chart — per-field accuracy
+                acc_df_chart = pd.DataFrame(acc_data)
+                acc_df_chart['Accuracy'] = acc_df_chart['Accuracy %'].astype(float)
+                acc_df_chart = acc_df_chart.sort_values('Accuracy', ascending=True)
+
+                colors = ['#10b981' if a >= 90 else '#f59e0b' if a >= 60 else '#ef4444'
+                          for a in acc_df_chart['Accuracy']]
+
+                fig_bar = go.Figure(go.Bar(
+                    x=acc_df_chart['Accuracy'],
+                    y=acc_df_chart['Field'],
+                    orientation='h',
+                    marker_color=colors,
+                    text=acc_df_chart['Accuracy'].apply(lambda x: f"{x:.0f}%"),
+                    textposition='outside',
+                    textfont={'size': 11}
+                ))
+                fig_bar.update_layout(
+                    height=max(220, len(acc_data) * 28),
+                    margin=dict(l=10, r=40, t=30, b=10),
+                    xaxis=dict(range=[0, 110], title='', showgrid=True,
+                               gridcolor='#f1f5f9'),
+                    yaxis=dict(title=''),
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font={'color': '#1e293b', 'size': 11},
+                    showlegend=False
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+            # Table below charts
             acc_df = pd.DataFrame(acc_data)
             st.dataframe(acc_df, use_container_width=True, hide_index=True)
 
@@ -917,15 +1399,24 @@ def process_pipeline(pdf_path):
     pdf_path_obj = Path(st.session_state.uploaded_file_path)
     pdf_size = pdf_path_obj.stat().st_size if pdf_path_obj.exists() else 0
 
+    _user = st.session_state.get('user', {})
     job_id = database.create_job(
         pdf_name=pdf_path_obj.name,
         pdf_path=str(pdf_path_obj),
         pdf_size=pdf_size,
         total_pages=metadata.get('total_pages', 0),
         text_pages=metadata.get('text_pages', 0),
-        image_pages=metadata.get('image_pages', 0)
+        image_pages=metadata.get('image_pages', 0),
+        user_id=_user.get('id'),
+        username=_user.get('username')
     )
     st.session_state.current_job = job_id
+
+    # Log activity
+    database.log_activity(
+        _user.get('id', 0), _user.get('username', 'unknown'),
+        "RUN_JOB", f"Processed {pdf_path_obj.name} → {job_id}"
+    )
 
     if extracted and 'items' in extracted:
         database.save_items(job_id, extracted['items'])
@@ -949,6 +1440,7 @@ def process_pipeline(pdf_path):
         'job_id': job_id,
         'pdf_name': pdf_path_obj.name,
         'pdf_path': str(pdf_path_obj),
+        'processed_by': _user.get('username', 'unknown'),
         'processing_time': processing_time,
         'total_pages': metadata.get('total_pages', 0),
         'text_pages': metadata.get('text_pages', 0),
@@ -980,6 +1472,16 @@ def process_pipeline(pdf_path):
 
     st.session_state.job_results = job_results
     save_session_to_disk(job_results)
+
+    # Save page-by-page content to DB for search/RAG
+    page_data = job_results.get('page_data', [])
+    if page_data:
+        database.save_page_contents(
+            job_id=job_id,
+            pdf_name=pdf_path_obj.name,
+            pages=page_data,
+            user_id=_user.get('id')
+        )
 
 
 def _build_page_data(metadata, text_data, ocr_data):
@@ -1032,22 +1534,50 @@ if 'job_results' not in st.session_state:
 if 'pipeline_error' not in st.session_state:
     st.session_state.pipeline_error = None
 
-database.init_database()
-
 # =============================================================================
 # SIDEBAR
 # =============================================================================
+
+current_user = st.session_state.user
+is_admin = current_user and current_user.get('role') == 'admin'
 
 with st.sidebar:
     st.markdown("### RO-ED AI Agent")
     st.caption("Document Intelligence")
     st.markdown("---")
 
-    stats = database.get_stats()
-    ui.metric_card(title="Total Jobs", content=str(stats['total_jobs']), key="sb_total_jobs")
-    ui.metric_card(title="Completed", content=str(stats['completed_jobs']), key="sb_completed")
-    ui.metric_card(title="Avg Accuracy", content=f"{stats['avg_accuracy']:.1f}%", key="sb_accuracy")
-    ui.metric_card(title="Total Cost", content=f"${stats['total_cost']:.4f}", key="sb_cost")
+    # User info + logout
+    display = current_user.get('display_name') or current_user.get('username', '')
+    role_badge = "admin" if is_admin else "user"
+    st.markdown(f'''<div class="sidebar-user-info">
+        <span class="name">{display}</span>
+        <span class="role-label role-{role_badge}">{role_badge}</span>
+    </div>''', unsafe_allow_html=True)
+
+    if st.button("Logout", use_container_width=True, key="sidebar_logout"):
+        database.log_activity(current_user['id'], current_user['username'], "LOGOUT", "Signed out")
+        st.session_state.authenticated = False
+        st.session_state.user = None
+        st.session_state.remember_me = False
+        st.session_state.login_time = None
+        _clear_auth_from_disk()
+        st.rerun()
+
+    st.markdown("---")
+
+    if is_admin:
+        stats = database.get_stats()
+        st.caption("All Users")
+    else:
+        stats = database.get_user_stats(current_user['id'])
+        st.caption("Your Stats")
+    sb_c1, sb_c2 = st.columns(2)
+    with sb_c1:
+        st.metric("Jobs", stats['total_jobs'])
+        st.metric("Accuracy", f"{stats['avg_accuracy']:.0f}%")
+    with sb_c2:
+        st.metric("Done", stats['completed_jobs'])
+        st.metric("Cost", f"${stats['total_cost']:.3f}")
 
     st.markdown("---")
     st.caption("Created by City AI Team")
@@ -1067,8 +1597,12 @@ with header_col2:
 # TABS
 # =============================================================================
 
+tab_options = ['Agent', 'History', 'Product Items', 'Declaration Data', 'Document Search']
+if is_admin:
+    tab_options.append('User Management')
+
 selected_tab = ui.tabs(
-    options=['Agent', 'History', 'Product Items', 'Declaration Data'],
+    options=tab_options,
     default_value='Agent',
     key="main_tabs"
 )
@@ -1147,11 +1681,19 @@ if selected_tab == 'Agent':
         dup_acc = dup.get('accuracy_percent', 0) or 0
         dup_time = dup.get('processing_time_seconds', 0) or 0
 
-        st.warning(f"This PDF has already been processed.")
+        dup_user = dup.get('username') or 'Unknown'
+        is_own_job = dup.get('user_id') == current_user.get('id')
+
+        if is_own_job:
+            st.warning("You have already processed this PDF.")
+        else:
+            st.warning(f"This PDF was already processed by **{_html.escape(dup_user)}**.")
+
         st.markdown(f"""
         | | |
         |---|---|
         | **Job ID** | `{dup['job_id']}` |
+        | **Processed By** | {_html.escape(dup_user)} |
         | **Status** | {dup['status']} |
         | **Processed On** | {dup_date} |
         | **Accuracy** | {dup_acc:.1f}% |
@@ -1204,6 +1746,7 @@ if selected_tab == 'Agent':
                         'job_id': dup['job_id'],
                         'pdf_name': dup['pdf_name'],
                         'pdf_path': dup.get('pdf_path', ''),
+                        'processed_by': dup.get('username', 'Unknown'),
                         'processing_time': dup_time,
                         'total_pages': dup.get('total_pages', 0) or 0,
                         'text_pages': dup.get('text_pages', 0) or 0,
@@ -1225,11 +1768,16 @@ if selected_tab == 'Agent':
                     st.session_state.pop('duplicate_job', None)
                     st.rerun()
         with b2:
-            if st.button("Reprocess Anyway", type="secondary", use_container_width=True):
-                st.session_state.force_reprocess = True
-                st.session_state.processing = True
-                st.session_state.pop('duplicate_job', None)
-                st.rerun()
+            can_reprocess = is_admin or is_own_job
+            if can_reprocess:
+                if st.button("Reprocess Anyway", type="secondary", use_container_width=True):
+                    st.session_state.force_reprocess = True
+                    st.session_state.processing = True
+                    st.session_state.pop('duplicate_job', None)
+                    st.rerun()
+            else:
+                st.button("Reprocess Anyway", disabled=True, use_container_width=True)
+                st.caption(f"Only {_html.escape(dup_user)} or admin can reprocess")
         with b3:
             if st.button("New Session", use_container_width=True, key="dup_new_session"):
                 st.session_state.pop('duplicate_job', None)
@@ -1249,10 +1797,11 @@ if selected_tab == 'Agent':
                 _do_new_session()
                 st.rerun()
 
-        ui.badges(
-            badge_list=[("COMPLETED", "default"), (f"{job_data['total_pages']} pages", "secondary"), (f"Job: {job_data['job_id'][:16]}", "secondary")],
-            key="result_header_badges"
-        )
+        _processed_by = job_data.get('processed_by', '')
+        badge_list = [("COMPLETED", "default"), (f"{job_data['total_pages']} pages", "secondary"), (f"Job: {job_data['job_id'][:16]}", "secondary")]
+        if _processed_by:
+            badge_list.append((f"By: {_processed_by}", "outline"))
+        ui.badges(badge_list=badge_list, key="result_header_badges")
 
         render_job_results(job_data)
 
@@ -1307,7 +1856,10 @@ if selected_tab == 'Agent':
 elif selected_tab == 'History':
     st.header("Job History")
 
-    all_history_jobs = database.get_all_jobs(limit=100)
+    if is_admin:
+        all_history_jobs = database.get_all_jobs(limit=100)
+    else:
+        all_history_jobs = database.get_user_jobs(current_user['id'], limit=100)
 
     if not all_history_jobs:
         ui.alert(title="No History", description="Process your first PDF to get started.", key="history_empty_alert")
@@ -1350,15 +1902,85 @@ elif selected_tab == 'History':
 
         # Summary table
         if jobs:
-            jobs_df = pd.DataFrame([{
-                "PDF Name": j['pdf_name'][:35] + ("..." if len(j['pdf_name']) > 35 else ""),
-                "Status": j['status'],
-                "Time (s)": f"{j.get('processing_time_seconds', 0) or 0:.1f}",
-                "Accuracy": f"{j.get('accuracy_percent', 0) or 0:.0f}%",
-                "Cost": f"${j.get('cost_usd', 0) or 0:.4f}",
-                "Date": (j.get('created_at', '') or '')[:10]
-            } for j in jobs])
+            def _build_job_row(j):
+                row = {
+                    "PDF Name": j['pdf_name'][:35] + ("..." if len(j['pdf_name']) > 35 else ""),
+                    "Status": j['status'],
+                    "Time (s)": f"{j.get('processing_time_seconds', 0) or 0:.1f}",
+                    "Accuracy": f"{j.get('accuracy_percent', 0) or 0:.0f}%",
+                    "Cost": f"${j.get('cost_usd', 0) or 0:.4f}",
+                    "Date": (j.get('created_at', '') or '')[:10]
+                }
+                if is_admin:
+                    row["User"] = j.get('username') or 'N/A'
+                return row
+            jobs_df = pd.DataFrame([_build_job_row(j) for j in jobs])
             st.dataframe(jobs_df, use_container_width=True, hide_index=True)
+
+        # ── History Charts ──
+        if jobs and len(jobs) >= 1:
+            st.markdown("---")
+
+            hist_chart1, hist_chart2 = st.columns(2)
+
+            with hist_chart1:
+                # Accuracy + Cost timeline
+                timeline_data = []
+                for j in reversed(jobs):
+                    date = (j.get('created_at') or '')[:16]
+                    acc = j.get('accuracy_percent', 0) or 0
+                    cost = (j.get('cost_usd', 0) or 0) * 1000  # in millicents for scale
+                    name = (j.get('pdf_name') or '')[:25]
+                    timeline_data.append({'Date': date, 'Accuracy %': acc, 'Cost (x1000)': cost, 'PDF': name})
+
+                tl_df = pd.DataFrame(timeline_data)
+                fig_tl = go.Figure()
+                fig_tl.add_trace(go.Scatter(
+                    x=tl_df['Date'], y=tl_df['Accuracy %'],
+                    mode='lines+markers', name='Accuracy',
+                    line=dict(color='#2563eb', width=2),
+                    marker=dict(size=8),
+                    hovertemplate='%{text}<br>Accuracy: %{y:.1f}%<extra></extra>',
+                    text=tl_df['PDF']
+                ))
+                fig_tl.update_layout(
+                    title=dict(text='Accuracy Over Time', font=dict(size=14)),
+                    height=280, margin=dict(l=10, r=10, t=40, b=40),
+                    xaxis=dict(showgrid=False, tickangle=-45, tickfont=dict(size=9)),
+                    yaxis=dict(range=[0, 105], title='', gridcolor='#f1f5f9'),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(color='#1e293b'), showlegend=False
+                )
+                st.plotly_chart(fig_tl, use_container_width=True)
+
+            with hist_chart2:
+                # Accuracy distribution by PDF
+                pdf_acc = []
+                for j in jobs:
+                    acc = j.get('accuracy_percent', 0) or 0
+                    name = (j.get('pdf_name') or '')[:30]
+                    status = j.get('status', '')
+                    pdf_acc.append({'PDF': name, 'Accuracy': acc, 'Status': status})
+
+                pdf_df = pd.DataFrame(pdf_acc)
+                colors = ['#10b981' if a >= 90 else '#f59e0b' if a >= 60 else '#ef4444'
+                          for a in pdf_df['Accuracy']]
+
+                fig_dist = go.Figure(go.Bar(
+                    x=pdf_df['PDF'], y=pdf_df['Accuracy'],
+                    marker_color=colors,
+                    text=pdf_df['Accuracy'].apply(lambda x: f"{x:.0f}%"),
+                    textposition='outside', textfont=dict(size=10)
+                ))
+                fig_dist.update_layout(
+                    title=dict(text='Accuracy by PDF', font=dict(size=14)),
+                    height=280, margin=dict(l=10, r=10, t=40, b=80),
+                    xaxis=dict(tickangle=-45, tickfont=dict(size=9), showgrid=False),
+                    yaxis=dict(range=[0, 110], title='', gridcolor='#f1f5f9'),
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(color='#1e293b'), showlegend=False
+                )
+                st.plotly_chart(fig_dist, use_container_width=True)
 
         st.markdown("---")
         st.subheader("Job Details")
@@ -1521,6 +2143,10 @@ elif selected_tab == 'History':
                 with dl3:
                     if st.button("Delete Job", type="secondary", use_container_width=True, key=f"del_{job['job_id']}"):
                         database.delete_job(job['job_id'])
+                        database.log_activity(
+                            current_user['id'], current_user['username'],
+                            "DELETE_JOB", f"Deleted job {job['job_id']} ({job['pdf_name']})"
+                        )
                         ef = config.RESULTS_DIR / f"final_output_{job['job_id']}.xlsx"
                         if ef.exists():
                             ef.unlink()
@@ -1532,9 +2158,9 @@ elif selected_tab == 'History':
 # =============================================================================
 
 elif selected_tab == 'Product Items':
-    st.header("Product Items (All Jobs)")
+    st.header("Product Items (All Jobs)" if is_admin else "Product Items (My Jobs)")
 
-    all_jobs = database.get_all_jobs(limit=1000)
+    all_jobs = database.get_all_jobs(limit=1000) if is_admin else database.get_user_jobs(current_user['id'], limit=1000)
 
     if not all_jobs:
         ui.alert(title="No Data", description="Process a PDF first to see extracted data.", key="items_empty_alert")
@@ -1678,9 +2304,9 @@ elif selected_tab == 'Product Items':
 # =============================================================================
 
 elif selected_tab == 'Declaration Data':
-    st.header("Declaration Data (All Jobs)")
+    st.header("Declaration Data (All Jobs)" if is_admin else "Declaration Data (My Jobs)")
 
-    all_jobs = database.get_all_jobs(limit=1000)
+    all_jobs = database.get_all_jobs(limit=1000) if is_admin else database.get_user_jobs(current_user['id'], limit=1000)
 
     if not all_jobs:
         ui.alert(title="No Data", description="Process a PDF first to see extracted data.", key="decl_empty_alert")
@@ -1782,3 +2408,200 @@ elif selected_tab == 'Declaration Data':
             st.caption(f"Showing {len(df_all_declarations)} of {len(all_declarations_data)} declarations")
         else:
             st.info("No declaration data found in any processed jobs")
+
+# =============================================================================
+# TAB 5: DOCUMENT SEARCH
+# =============================================================================
+
+elif selected_tab == 'Document Search':
+    st.header("Document Search")
+    st.caption("Search across all extracted page content from processed PDFs")
+
+    # Determine user scope
+    _search_uid = None if is_admin else current_user['id']
+
+    # Stats
+    pc_stats = database.get_page_content_stats(user_id=_search_uid)
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        ui.metric_card(title="PDFs", content=str(pc_stats['total_pdfs']), key="ds_pdfs")
+    with col2:
+        ui.metric_card(title="Pages", content=str(pc_stats['total_pages']), key="ds_pages")
+    with col3:
+        ui.metric_card(title="Text Pages", content=str(pc_stats['text_pages']), key="ds_text")
+    with col4:
+        ui.metric_card(title="Image Pages", content=str(pc_stats['image_pages']), key="ds_image")
+    with col5:
+        chars_k = pc_stats['total_chars'] / 1000
+        ui.metric_card(title="Total Chars", content=f"{chars_k:.0f}K", key="ds_chars")
+
+    # Document overview charts
+    all_pc = database.get_all_page_contents(user_id=_search_uid, limit=1000)
+    if all_pc:
+        ds_c1, ds_c2 = st.columns(2)
+
+        with ds_c1:
+            # Treemap — pages by PDF, size = chars, color = type
+            tree_data = []
+            for p in all_pc:
+                tree_data.append({
+                    'PDF': (p.get('pdf_name') or '')[:30],
+                    'Page': f"Pg {p.get('page_number', 0)}",
+                    'Type': p.get('page_type', 'TEXT'),
+                    'Chars': p.get('char_count', 0) or 1
+                })
+            tree_df = pd.DataFrame(tree_data)
+            fig_tree = px.treemap(
+                tree_df, path=['PDF', 'Page'], values='Chars',
+                color='Type', color_discrete_map={'TEXT': '#3b82f6', 'IMAGE': '#f59e0b'},
+            )
+            fig_tree.update_layout(
+                title=dict(text='Pages by PDF (size = content length)', font=dict(size=13)),
+                height=300, margin=dict(l=5, r=5, t=35, b=5),
+                paper_bgcolor='rgba(0,0,0,0)',
+            )
+            fig_tree.update_traces(textinfo='label+value', textfont=dict(size=10))
+            st.plotly_chart(fig_tree, use_container_width=True)
+
+        with ds_c2:
+            # Stacked bar — text vs image pages per PDF
+            pdf_breakdown = {}
+            for p in all_pc:
+                pdf = (p.get('pdf_name') or '')[:25]
+                ptype = p.get('page_type', 'TEXT')
+                if pdf not in pdf_breakdown:
+                    pdf_breakdown[pdf] = {'TEXT': 0, 'IMAGE': 0}
+                pdf_breakdown[pdf][ptype] = pdf_breakdown[pdf].get(ptype, 0) + 1
+
+            pdfs = list(pdf_breakdown.keys())
+            fig_stack = go.Figure()
+            fig_stack.add_trace(go.Bar(
+                name='Text', x=pdfs,
+                y=[pdf_breakdown[p]['TEXT'] for p in pdfs],
+                marker_color='#3b82f6'
+            ))
+            fig_stack.add_trace(go.Bar(
+                name='Image', x=pdfs,
+                y=[pdf_breakdown[p]['IMAGE'] for p in pdfs],
+                marker_color='#f59e0b'
+            ))
+            fig_stack.update_layout(
+                title=dict(text='Page Types per PDF', font=dict(size=13)),
+                barmode='stack', height=300,
+                margin=dict(l=10, r=10, t=35, b=80),
+                xaxis=dict(tickangle=-45, tickfont=dict(size=9), showgrid=False),
+                yaxis=dict(title='Pages', gridcolor='#f1f5f9'),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#1e293b'), legend=dict(orientation='h', y=1.12)
+            )
+            st.plotly_chart(fig_stack, use_container_width=True)
+
+    st.markdown("---")
+
+    # Filters
+    f1, f2, f3 = st.columns([3, 1.5, 1.5])
+    with f1:
+        search_query = st.text_input("Search documents...", placeholder="e.g. Whipping Cream, invoice, 100308...", key="ds_search")
+    with f2:
+        pdf_list = database.get_page_content_pdfs(user_id=_search_uid)
+        filter_pdf = st.selectbox("PDF", options=["All PDFs"] + pdf_list, key="ds_pdf_filter")
+    with f3:
+        filter_type = st.selectbox("Page Type", options=["All Types", "TEXT", "IMAGE"], key="ds_type_filter")
+
+    # Fetch results
+    if search_query and search_query.strip():
+        results = database.search_page_contents(
+            query=search_query, user_id=_search_uid,
+            pdf_name=filter_pdf, page_type=filter_type, limit=200
+        )
+    else:
+        results = database.get_all_page_contents(
+            user_id=_search_uid, pdf_name=filter_pdf,
+            page_type=filter_type, limit=200
+        )
+
+    if results:
+        st.caption(f"Found {len(results)} pages")
+
+        # Build table
+        table_data = []
+        for r in results:
+            content_preview = (r.get('content') or '')[:150].replace('\n', ' ')
+            if search_query and '**' in (r.get('snippet') or ''):
+                content_preview = (r.get('snippet') or '')[:150].replace('\n', ' ')
+
+            table_data.append({
+                'PDF': (r.get('pdf_name') or '')[:35],
+                'Page': r.get('page_number', 0),
+                'Type': r.get('page_type', ''),
+                'Agent': (r.get('source_agent') or '').replace(' (text extraction)', '').replace(' (OCR)', ''),
+                'Chars': r.get('char_count', 0),
+                'Content Preview': content_preview,
+            })
+
+        df_pages = pd.DataFrame(table_data)
+        st.dataframe(df_pages, use_container_width=True, hide_index=True)
+
+        # Export
+        st.markdown("---")
+        export_data = []
+        for r in results:
+            export_data.append({
+                'PDF Name': r.get('pdf_name', ''),
+                'Job ID': r.get('job_id', ''),
+                'Page': r.get('page_number', 0),
+                'Type': r.get('page_type', ''),
+                'Source Agent': r.get('source_agent', ''),
+                'Chars': r.get('char_count', 0),
+                'Content': r.get('content', ''),
+            })
+        df_export = pd.DataFrame(export_data)
+        csv = df_export.to_csv(index=False).encode('utf-8')
+        st.download_button("Export All Page Content (CSV)", data=csv,
+            file_name=f"page_contents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv", type="primary")
+
+        # Expandable full content per page
+        st.markdown("---")
+        st.subheader("Full Page Content")
+        st.caption("Expand to read the full extracted text of each page")
+
+        # Group by PDF
+        from collections import OrderedDict
+        grouped = OrderedDict()
+        for r in results:
+            pdf = r.get('pdf_name', 'Unknown')
+            if pdf not in grouped:
+                grouped[pdf] = []
+            grouped[pdf].append(r)
+
+        for pdf_name, pages in grouped.items():
+            with st.expander(f"{pdf_name} ({len(pages)} pages)", expanded=False):
+                for pg in pages:
+                    pg_num = pg.get('page_number', 0)
+                    pg_type = pg.get('page_type', '')
+                    agent = pg.get('source_agent', '')
+                    chars = pg.get('char_count', 0)
+                    content = pg.get('content', '')
+
+                    type_icon = "T" if pg_type == "TEXT" else "I"
+                    st.markdown(f"**Page {pg_num}** `{type_icon}` | {agent} | {chars} chars")
+                    if content:
+                        st.code(content[:3000], language=None)
+                    else:
+                        st.caption("No content extracted")
+                    st.markdown("---")
+    else:
+        if search_query:
+            st.info(f"No results found for \"{search_query}\"")
+        else:
+            st.info("No page content stored yet. Process a PDF to populate this tab.")
+
+
+# =============================================================================
+# TAB 6: USER MANAGEMENT (ADMIN ONLY)
+# =============================================================================
+
+elif selected_tab == 'User Management' and is_admin:
+    render_admin_user_management()

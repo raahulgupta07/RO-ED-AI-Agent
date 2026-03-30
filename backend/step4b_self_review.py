@@ -7,7 +7,10 @@ Common fixes: decimal vs percentage, missing units, formatting errors.
 
 import json
 import time
+import re
+import base64
 import requests
+import fitz
 import config
 
 REVIEW_PROMPT = """You are a quality review agent. Below is extracted data from a Myanmar customs import document.
@@ -68,9 +71,28 @@ def self_review(extracted_data):
 
     prompt = REVIEW_PROMPT.format(extracted_json=json.dumps(review_data, indent=2, default=str))
 
+    # Build content with document images so reviewer can verify against source
+    msg_content = []
+    if config.PDF_PATH:
+        try:
+            doc = fitz.open(str(config.PDF_PATH))
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                pix = page.get_pixmap(matrix=fitz.Matrix(config.EXTRACTION_RESOLUTION, config.EXTRACTION_RESOLUTION))
+                img_bytes = pix.tobytes("png")
+                img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+                msg_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+                })
+            doc.close()
+        except Exception:
+            pass
+    msg_content.append({"type": "text", "text": prompt})
+
     payload = {
         "model": config.REVIEW_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": msg_content}],
         "temperature": 0,
         "max_tokens": 6000
     }
@@ -104,7 +126,6 @@ def self_review(extracted_data):
         return extracted_data
 
     try:
-        import re
         content_text = response.json()["choices"][0]["message"]["content"]
         cleaned = re.sub(r'```json\n?|```\n?', '', content_text).strip()
 
