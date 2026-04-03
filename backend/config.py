@@ -47,9 +47,23 @@ if not API_KEY or API_KEY == "sk-or-v1-your-openrouter-key-here":
 # ============================================================================
 # MODEL CONFIGURATION
 # ============================================================================
+# Available models via OpenRouter (all support vision/image input):
+#
+# Budget tier (~$0.01-0.02 per PDF):
+#   "anthropic/claude-3-haiku"           — $0.25/$1.25 per M tokens (struggles with comma-separated numbers)
+#   "google/gemini-2.5-flash"            — $0.30/$2.50 per M tokens (best value, native Google OCR, handles commas correctly)
+#   "google/gemini-3-flash-preview"      — $0.50/$3.00 per M tokens (latest, enhanced data extraction)
+#
+# Mid tier (~$0.05-0.10 per PDF):
+#   "google/gemini-2.5-pro"              — $1.25/$10.00 per M tokens (highest accuracy, 1M context)
+#   "google/gemini-3-pro-preview"        — frontier reasoning, 1M context
+#
+# Premium tier (~$0.15+ per PDF):
+#   "anthropic/claude-3.5-sonnet"        — $3.00/$15.00 per M tokens (best for complex layouts)
+#   "anthropic/claude-sonnet-4-6"        — latest Claude, strongest vision
 
-OCR_MODEL = "anthropic/claude-3-haiku"
-EXTRACTION_MODEL = "anthropic/claude-3-haiku"
+OCR_MODEL = "google/gemini-3.1-flash-lite-preview"
+EXTRACTION_MODEL = "google/gemini-3.1-flash-lite-preview"
 
 # ============================================================================
 # OUTPUT CONFIGURATION
@@ -103,4 +117,4 @@ MAX_FIX_CYCLES = 2       # max field-fix attempts
 MAX_FULL_RETRIES = 1     # max full re-extraction attempts
 
 # Self-review model (can be same or different)
-REVIEW_MODEL = "anthropic/claude-3-haiku"
+REVIEW_MODEL = "google/gemini-3.1-flash-lite-preview"

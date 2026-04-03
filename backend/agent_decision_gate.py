@@ -24,13 +24,20 @@ FAILED FIELDS:
 
 Please re-extract ONLY the failed fields listed above. Look carefully at the document images and correct the values.
 
+IMPORTANT RULES:
+- Extract the ACTUAL values from the document images. NEVER guess or use placeholder values.
+- Customs duty rate: use DECIMAL (0.15 = 15%, 0.0 = FREE). Check if the document shows "FREE" or "0%".
+- Exchange Rate: in Myanmar documents, commas are THOUSANDS separators (2,100 = 2100, NOT 2.1).
+- Currency: determine the ACTUAL currency from the invoice page — do NOT assume THB.
+- Declaration No: extract the UNIQUE number from THIS document.
+
 Return a JSON object with ONLY the corrected fields:
 {{
   "fixed_items": [
-    {{"item_index": 0, "field": "Customs duty rate", "corrected_value": 0.15}}
+    {{"item_index": 0, "field": "field_name", "corrected_value": "<EXTRACT FROM DOCUMENT>"}}
   ],
   "fixed_declaration": [
-    {{"field": "Exchange Rate", "corrected_value": 65.0025}}
+    {{"field": "field_name", "corrected_value": "<EXTRACT FROM DOCUMENT>"}}
   ]
 }}
 
@@ -283,8 +290,12 @@ def run_decision_gate(extracted_data, validation_result, cross_validate_func, ac
         import step4_claude_structured_extraction
         import step4b_self_review
 
+        # Save previous accuracy BEFORE re-extraction
+        prev_accuracy = validation_result.get('overall_accuracy', 0)
+
         for retry in range(config.MAX_FULL_RETRIES):
             gate_log.append(f"Full re-extraction attempt {retry + 1}/{config.MAX_FULL_RETRIES}")
+            gate_log.append(f"Previous accuracy: {prev_accuracy:.1f}%")
 
             new_extracted = step4_claude_structured_extraction.extract_structured_data()
             if not new_extracted:
@@ -293,14 +304,15 @@ def run_decision_gate(extracted_data, validation_result, cross_validate_func, ac
 
             new_extracted = step4b_self_review.self_review(new_extracted)
             _save_extraction(new_extracted)
-            validation_result = cross_validate_func()
-            new_accuracy = validation_result.get('overall_accuracy', 0)
+            new_validation = cross_validate_func()
+            new_accuracy = new_validation.get('overall_accuracy', 0)
             gate_log.append(f"Re-extraction accuracy: {new_accuracy:.1f}%")
 
-            # Compare against previous validation accuracy, not completeness
-            prev_accuracy = validation_result.get('overall_accuracy', 0)
+            # Compare new accuracy against PREVIOUS accuracy
             if new_accuracy > prev_accuracy:
                 extracted_data = new_extracted
+                validation_result = new_validation
+                prev_accuracy = new_accuracy
                 gate_log.append("Re-extraction improved results — accepted")
             else:
                 gate_log.append("Re-extraction did not improve — keeping previous result")

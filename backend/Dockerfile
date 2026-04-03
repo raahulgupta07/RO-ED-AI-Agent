@@ -14,15 +14,15 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Application code
-COPY *.py .
-
 # Create non-root user
 RUN useradd -m -u 1000 appuser
 
-# Data directories (owned by appuser)
+# Application code
+COPY *.py ./
+
+# Data directories + fix permissions on all app files
 RUN mkdir -p /app/data/results /app/data/uploads /app/data/jobs \
-    && chown -R appuser:appuser /app/data
+    && chown -R appuser:appuser /app
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080

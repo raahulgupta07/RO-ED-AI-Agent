@@ -9,7 +9,7 @@ RO-ED AI Agent — agentic document intelligence system that extracts structured
 - **UI:** Streamlit 1.31 + streamlit-shadcn-ui 0.1.19 + Plotly 5.18
 - **Backend:** Python 3.9
 - **Database:** SQLite with WAL mode, FTS5 full-text search (auto-created at backend/data/extraction_history.db)
-- **AI:** OpenRouter API (anthropic/claude-3-haiku for OCR + extraction + review)
+- **AI:** OpenRouter API (google/gemini-3.1-flash-lite-preview for OCR + extraction + review)
 - **Auth:** bcrypt password hashing, role-based access (admin/user), persistent sessions, session timeout
 - **Container:** Docker (single service, non-root user, resource limits)
 - **PDF Processing:** PyMuPDF (fitz)
@@ -129,7 +129,7 @@ Required env var: `OPENROUTER_API_KEY`
 Optional env var: `ADMIN_DEFAULT_PASSWORD` (defaults to admin123)
 
 Key settings:
-- `OCR_MODEL` / `EXTRACTION_MODEL` / `REVIEW_MODEL` — all set to anthropic/claude-3-haiku
+- `OCR_MODEL` / `EXTRACTION_MODEL` / `REVIEW_MODEL` — all set to google/gemini-3.1-flash-lite-preview
 - `MAX_RETRIES=3`, `RETRY_BACKOFF_BASE=2` — retry with 2s, 4s, 8s backoff
 - `ACCURACY_ACCEPT=90`, `ACCURACY_FIX=60`, `ACCURACY_RETRY=30` — decision gate thresholds
 - `CONFIDENCE_THRESHOLD=0.7` — fields below this flagged for review + re-extraction

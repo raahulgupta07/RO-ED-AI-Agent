@@ -10,10 +10,204 @@ from pathlib import Path
 import config
 
 
+PLACEHOLDER_PATTERNS = [
+    'COMPANY NAME', 'PRODUCT (BRAND: NAME)', 'PRODUCT NAME',
+    'C/O: COUNTRY', 'BRAND: NAME', 'INV-001', 'INVOICE-001',
+    '<EXTRACT', '<extract', 'EXTRACT_FROM_DOCUMENT',
+    'CURRENCY RATE', 'NUMBER+UNIT', 'PRICE+UNIT',
+]
+
+
+def _load_raw_text():
+    """Load raw text from Step 2 for cross-checking LLM extraction."""
+    text_file = config.RESULTS_DIR / 'text_pages_raw.json'
+    if not text_file.exists():
+        return ""
+    try:
+        with open(text_file) as f:
+            data = json.load(f)
+        # Combine all page text into one string
+        all_text = ""
+        if isinstance(data, dict):
+            for key in sorted(data.keys()):
+                page = data[key]
+                if isinstance(page, dict):
+                    all_text += page.get('text', '') + "\n"
+                elif isinstance(page, str):
+                    all_text += page + "\n"
+        return all_text
+    except Exception:
+        return ""
+
+
+def _find_declaration_no_in_text(raw_text):
+    """Extract declaration number from raw text using regex.
+    Declaration numbers are typically 12-digit numbers near 'Declaration No'."""
+    # Look for 12-digit numbers near 'Declaration' keyword
+    patterns = [
+        r'Declaration\s*No[.\s:]*(\d{12})',
+        r'Declaration\s*No[.\s:]*(\d{9,15})',
+        r'\b(100\d{9})\b',  # Myanmar declaration numbers start with 100
+    ]
+    for pat in patterns:
+        matches = re.findall(pat, raw_text, re.IGNORECASE)
+        if matches:
+            # Return the most common match (appears on multiple pages)
+            from collections import Counter
+            counter = Counter(matches)
+            return counter.most_common(1)[0][0]
+    return None
+
+
+def _find_exchange_rate_in_text(raw_text):
+    """Extract exchange rate from raw text.
+    Looks for patterns like 'Exchange Rate (1) THB - 65.0025' or standalone rates."""
+    # Strategy 1: Look near "Exchange Rate" keywords
+    patterns = [
+        r'Exchange\s*Rat\s*e\s*\(1\)\s*[A-Za-z]{2,4}\s*[-–]?\s*([\d,.]+[a-zA-Z]?)',
+        r'Exchange\s*Rate\s*\(1\)\s*[A-Za-z]{2,4}\s*[-–]?\s*([\d,.]+[a-zA-Z]?)',
+        r'Exchmge\s*Rat\s*e\s*\(1\)\s*\w+\s*[-–]?\s*([\d,.]+[a-zA-Z]?)',
+        r'Exchange\s*Rate\s*[\s(1)]*\s*[-–:]\s*([\d,.]+[a-zA-Z]?)',
+    ]
+    for pat in patterns:
+        matches = re.findall(pat, raw_text, re.IGNORECASE)
+        if matches:
+            for m in matches:
+                cleaned = m.replace(',', '')
+                # Handle OCR garble: trailing letter → 5 (common OCR error)
+                cleaned = re.sub(r'[a-zA-Z]$', '5', cleaned)
+                try:
+                    val = float(cleaned)
+                    if val > 1.0:
+                        return val
+                except ValueError:
+                    continue
+
+    # Strategy 2: Look for OCR-garbled rate patterns (XX.Xs where s is misread digit)
+    # Common in scanned Myawaddy documents. THB rates are 50-70 range.
+    garble_matches = re.findall(r'(\d{2}\.\d[a-zA-Z])', raw_text)
+    for m in garble_matches:
+        cleaned = re.sub(r'[a-zA-Z]$', '5', m)
+        try:
+            val = float(cleaned)
+            if 50 < val < 70:  # THB exchange rate range for Myanmar
+                return val
+        except ValueError:
+            continue
+
+    # Strategy 3: Look for clean exchange rate numbers near currency keywords
+    # USD rates are typically 2000-3000, THB rates 50-70
+    for match in re.finditer(r'(THB|USD|MMK|ti\]B)', raw_text, re.IGNORECASE):
+        nearby = raw_text[max(0, match.start()-50):match.end()+50]
+        # Look for rate-like numbers (not prices — prices have 4+ decimals)
+        nums = re.findall(r'\b(\d{2}\.\d{1,4})\b', nearby)
+        for n in nums:
+            try:
+                val = float(n)
+                if 50 < val < 70:  # THB range
+                    return val
+            except ValueError:
+                continue
+        # USD range with comma
+        nums = re.findall(r'\b(\d{1,2}[,]\d{3})\b', nearby)
+        for n in nums:
+            try:
+                val = float(n.replace(',', ''))
+                if 1000 < val < 5000:
+                    return val
+            except ValueError:
+                continue
+
+    return None
+
+
+def _find_quantities_in_text(raw_text):
+    """Extract all quantity-like numbers from raw text (XXX.X KG patterns)."""
+    quantities = set()
+    # Match numbers followed by KG/KC/KGM (KC is OCR garble of KG)
+    patterns = [
+        r'([\d,]+\.?\d*)\s*K[GCg]',
+        r'Quantity\s*\(1\)\s*\n?\s*([\d,.]+)\s*K[GCg]',
+    ]
+    for pat in patterns:
+        matches = re.findall(pat, raw_text, re.IGNORECASE)
+        for m in matches:
+            try:
+                val = float(m.replace(',', ''))
+                if val > 10:
+                    quantities.add(val)
+            except ValueError:
+                continue
+    return quantities
+
+
+def _find_closest_qty_in_text(extracted_qty, text_quantities, raw_text=""):
+    """If extracted qty doesn't match any text qty, find the closest one.
+    Returns corrected qty if a close match exists, else None.
+    IMPORTANT: Only correct if the extracted value truly doesn't exist in the document."""
+    if not text_quantities:
+        return None
+
+    # Check if extracted qty exists in text (exact or very close)
+    for tq in text_quantities:
+        if abs(extracted_qty - tq) < 0.01:
+            return None  # Already correct
+
+    # SAFETY CHECK: Before correcting, verify the extracted number
+    # doesn't appear ANYWHERE in the raw text (not just near KG)
+    if raw_text:
+        # Check for the number in various formats: 17280, 17,280, 17280.0, 17280.0000
+        ext_int = int(extracted_qty) if extracted_qty == int(extracted_qty) else None
+        ext_str = f"{extracted_qty:g}"
+
+        formats_to_check = [ext_str]
+        if ext_int is not None:
+            formats_to_check.append(str(ext_int))
+            # With comma thousands separator
+            formats_to_check.append(f"{ext_int:,}")
+        # With decimals
+        formats_to_check.append(f"{extracted_qty:.1f}")
+        formats_to_check.append(f"{extracted_qty:.4f}")
+
+        for fmt in formats_to_check:
+            if fmt in raw_text:
+                return None  # Number exists in document — don't correct
+
+    # Find closest match within same order of magnitude
+    best = None
+    best_diff = float('inf')
+    for tq in text_quantities:
+        if tq == 0 or extracted_qty == 0:
+            continue
+        if min(extracted_qty, tq) < 0.001:
+            continue
+        ratio = max(extracted_qty, tq) / min(extracted_qty, tq)
+        if ratio > 2:
+            continue
+        diff = abs(extracted_qty - tq)
+        if diff < best_diff:
+            best_diff = diff
+            best = tq
+
+    # Only correct if the difference looks like a digit misread (< 30% off)
+    if best is not None and best_diff / max(extracted_qty, best) < 0.3:
+        return best
+    return None
+
+
+def _is_placeholder(value):
+    """Check if a value looks like a template placeholder."""
+    s = str(value).strip().upper()
+    return any(p.upper() in s for p in PLACEHOLDER_PATTERNS)
+
+
 def validate_item_field(field_name, value):
     """Validate a single item field."""
     if value is None or value == '':
         return False, "Empty value"
+
+    if _is_placeholder(value):
+        return False, "Placeholder/template value detected — not extracted from document"
 
     if field_name == 'Item name':
         return (len(str(value)) >= 10, "Valid" if len(str(value)) >= 10 else "Too short")
@@ -38,8 +232,21 @@ def validate_item_field(field_name, value):
         return (0 <= value <= 1, "Valid" if 0 <= value <= 1 else "Out of range (should be 0-1)")
 
     if field_name == 'Exchange Rate (1)':
-        has_num = any(c.isdigit() for c in str(value))
-        return (has_num, "Valid" if has_num else "No rate found")
+        s = str(value)
+        has_num = any(c.isdigit() for c in s)
+        if not has_num:
+            return False, "No rate found"
+        # Extract numeric part and check range
+        import re as _re
+        nums = _re.findall(r'[\d.]+', s)
+        if nums:
+            try:
+                rate_val = float(nums[0])
+                if rate_val < 1.0:
+                    return False, f"Exchange rate {rate_val} is unreasonably low — check comma vs decimal"
+            except ValueError:
+                pass
+        return True, "Valid"
 
     return True, "Valid"
 
@@ -50,6 +257,9 @@ def validate_decl_field(field_name, value):
         return False, "Empty value"
 
     s = str(value).strip()
+
+    if _is_placeholder(s):
+        return False, "Placeholder/template value detected — not extracted from document"
 
     # Declaration No — should be non-empty string with digits
     if field_name == 'Declaration No':
@@ -74,9 +284,32 @@ def validate_decl_field(field_name, value):
         is_code = len(s) >= 2 and s.isalpha()
         return (is_code, "Valid" if is_code else "Expected currency code (e.g. THB, MMK)")
 
+    # Exchange Rate — must be a reasonable number
+    if field_name == 'Exchange Rate':
+        try:
+            num = float(value)
+            if num < 0:
+                return False, "Negative value"
+            if 0 < num < 1.0:
+                return False, f"Exchange rate {num} is unreasonably low — likely comma parsed as decimal (e.g., 2,100 read as 2.1)"
+            return True, "Valid"
+        except (ValueError, TypeError):
+            # Could be a string like "THB 65.0025" — extract number
+            import re as _re
+            nums = _re.findall(r'[\d.]+', str(value))
+            if nums:
+                try:
+                    num = float(nums[0])
+                    if 0 < num < 1.0:
+                        return False, f"Exchange rate {num} is unreasonably low"
+                    return True, "Valid"
+                except ValueError:
+                    pass
+            return False, "Not a valid number"
+
     # Numeric fields — must be a number >= 0
     numeric_fields = [
-        'Invoice Price', 'Invoice Price ', 'Exchange Rate',
+        'Invoice Price', 'Invoice Price ',
         'Total Customs Value', 'Total Customs Value ',
         'Import/Export Customs Duty', 'Import/Export Customs Duty ',
         'Commercial Tax (CT)', 'Advance Income Tax (AT)',
@@ -185,6 +418,183 @@ def cross_validate():
     else:
         print("  No declaration to validate")
 
+    # ── Cross-field Validation ──
+    cross_issues = []
+    import re as _re
+
+    if declaration and items:
+        decl_currency = str(declaration.get('Currency', '')).strip().upper()
+        if decl_currency:
+            for i, item in enumerate(items):
+                exch_str = str(item.get('Exchange Rate (1)', '')).upper()
+                # Check if declared currency appears in item exchange rate
+                if exch_str and decl_currency not in exch_str:
+                    # Extract what currency IS in the exchange rate
+                    found_curr = _re.findall(r'[A-Z]{2,4}', exch_str)
+                    if found_curr and found_curr[0] != decl_currency:
+                        msg = f"Item {i+1} exchange rate currency ({found_curr[0]}) doesn't match declaration currency ({decl_currency})"
+                        cross_issues.append(msg)
+
+    # Helper to extract numeric values from declaration (used in multiple sections below)
+    def _get_num(key):
+        if not declaration:
+            return None
+        val = _get_decl_value(declaration, key)
+        try:
+            return float(val) if val is not None else None
+        except (ValueError, TypeError):
+            nums = _re.findall(r'[\d.]+', str(val))
+            return float(nums[0]) if nums else None
+
+    # Initialize variables used across sections
+    total_cv = None
+    customs_duty = None
+    ct = None
+    at = None
+    exch_rate = None
+
+    if declaration:
+        # Financial sanity checks
+        total_cv = _get_num('Total Customs Value')
+        customs_duty = _get_num('Import/Export Customs Duty')
+        ct = _get_num('Commercial Tax (CT)')
+        at = _get_num('Advance Income Tax (AT)')
+        exch_rate = _get_num('Exchange Rate')
+
+        # Total Customs Value should be >= any individual tax/duty
+        if total_cv is not None and customs_duty is not None:
+            if customs_duty > 0 and total_cv < customs_duty:
+                cross_issues.append(f"Total Customs Value ({total_cv}) is less than Customs Duty ({customs_duty}) — likely comma-as-decimal error")
+        if total_cv is not None and ct is not None:
+            if ct > 0 and total_cv < ct:
+                cross_issues.append(f"Total Customs Value ({total_cv}) is less than Commercial Tax ({ct}) — likely comma-as-decimal error")
+
+        # Exchange rate sanity for MMK (typically > 100)
+        local_ccy = str(declaration.get('Currency.1', '')).strip().upper()
+        if exch_rate is not None and exch_rate > 0:
+            if local_ccy == 'MMK' and exch_rate < 100:
+                cross_issues.append(f"Exchange Rate {exch_rate} for MMK is unreasonably low — commas may have been read as decimals (e.g., 2,100 → 2.1)")
+
+        # Invoice Price sanity — should be positive
+        inv_price = _get_num('Invoice Price')
+        if inv_price is not None and inv_price == 0:
+            cross_issues.append("Invoice Price is 0 — likely extraction error")
+
+    # ── Text-based verification: cross-check LLM output against raw text ──
+    raw_text = _load_raw_text()
+    auto_fixes = []
+
+    if raw_text and declaration:
+        # FIX 0a: Declaration No — verify against raw text
+        text_decl_no = _find_declaration_no_in_text(raw_text)
+        extracted_decl_no = str(declaration.get('Declaration No', ''))
+        if text_decl_no and text_decl_no != extracted_decl_no:
+            auto_fixes.append(f"Declaration No: '{extracted_decl_no}' → '{text_decl_no}' (verified from raw text)")
+            declaration['Declaration No'] = text_decl_no
+            # Update validation
+            if 'Declaration No' in decl_validations:
+                decl_validations['Declaration No'] = {'value': text_decl_no, 'is_valid': True, 'message': 'Valid (text-verified)'}
+
+        # FIX 0b: Exchange Rate — verify against raw text
+        text_exch = _find_exchange_rate_in_text(raw_text)
+        if text_exch:
+            try:
+                decl_exch = float(declaration.get('Exchange Rate', 0))
+                # If text rate is very different from LLM rate, use text rate
+                if decl_exch > 0 and text_exch > 0 and min(decl_exch, text_exch) > 0.001:
+                    ratio = max(decl_exch, text_exch) / min(decl_exch, text_exch)
+                    if ratio > 2:  # More than 2x difference
+                        auto_fixes.append(f"Declaration Exchange Rate: {decl_exch} → {text_exch} (verified from raw text)")
+                        declaration['Exchange Rate'] = text_exch
+                elif decl_exch == 0 and text_exch > 0:
+                    auto_fixes.append(f"Declaration Exchange Rate: 0 → {text_exch} (found in raw text)")
+                    declaration['Exchange Rate'] = text_exch
+            except (ValueError, TypeError):
+                pass
+
+    # ── Auto-correct: Fix items based on declaration data ──
+    if declaration and items:
+        decl_currency = str(declaration.get('Currency', '')).strip().upper()
+        decl_exch_val = _get_num('Exchange Rate')
+
+        for i, item in enumerate(items):
+            # FIX 1: Customs duty rate — if declaration duty = 0, items should be 0.0
+            if customs_duty is not None and customs_duty == 0:
+                item_duty = item.get('Customs duty rate')
+                if isinstance(item_duty, (int, float)) and item_duty > 0:
+                    auto_fixes.append(f"Item {i+1}: Customs duty rate {item_duty} → 0.0 (declaration shows FREE/0 duty)")
+                    item['Customs duty rate'] = 0.0
+                    # Re-validate this field
+                    for iv in item_validations:
+                        if iv['item_number'] == i + 1:
+                            iv['fields']['Customs duty rate'] = {'value': 0.0, 'is_valid': True, 'message': 'Valid (auto-corrected: FREE duty)'}
+                            iv['valid_fields'] = sum(1 for f in iv['fields'].values() if f['is_valid'])
+
+            # FIX 1b: Quantity — cross-check against raw text
+            if raw_text:
+                text_quantities = _find_quantities_in_text(raw_text)
+                qty_str = str(item.get('Quantity (1)', '') or '')
+                qty_nums = _re.findall(r'[\d,.]+', qty_str)
+                if qty_nums and text_quantities:
+                    try:
+                        ext_qty = float(qty_nums[0].replace(',', ''))
+                        corrected_qty = _find_closest_qty_in_text(ext_qty, text_quantities, raw_text)
+                        if corrected_qty is not None:
+                            unit = _re.findall(r'[A-Za-z]+', qty_str)
+                            unit_str = unit[0] if unit else 'KG'
+                            new_qty = f"{corrected_qty:g} {unit_str}"
+                            auto_fixes.append(f"Item {i+1}: Quantity '{qty_str}' → '{new_qty}' (verified from raw text — {ext_qty} not found, closest match {corrected_qty})")
+                            item['Quantity (1)'] = new_qty
+                    except (ValueError, TypeError):
+                        pass
+
+            # FIX 2: Exchange Rate (1) — fix ÷1000 and wrong currency
+            exch_str = str(item.get('Exchange Rate (1)', '') or '')
+            exch_nums = _re.findall(r'[\d.]+', exch_str)
+            if exch_nums:
+                exch_val = float(exch_nums[0])
+                # If exchange rate < 1.0 and declaration has a large rate, multiply by 1000
+                if exch_val > 0 and exch_val < 1.0 and decl_exch_val and decl_exch_val > 100:
+                    corrected = exch_val * 1000
+                    new_exch = f"{decl_currency} {corrected:g}" if decl_currency else f"{corrected:g}"
+                    auto_fixes.append(f"Item {i+1}: Exchange Rate (1) '{exch_str}' → '{new_exch}' (×1000 comma fix)")
+                    item['Exchange Rate (1)'] = new_exch
+                # If exchange rate > 1 but wrong currency vs declaration
+                elif decl_currency and decl_exch_val:
+                    found_curr = _re.findall(r'[A-Z]{2,4}', exch_str)
+                    if found_curr and found_curr[0] != decl_currency:
+                        new_exch = f"{decl_currency} {decl_exch_val:g}"
+                        auto_fixes.append(f"Item {i+1}: Exchange Rate (1) currency '{found_curr[0]}' → '{decl_currency}' (match declaration)")
+                        item['Exchange Rate (1)'] = new_exch
+
+            # FIX 3: Invoice unit price currency — ensure matches declaration currency
+            price_str = str(item.get('Invoice unit price', '') or '')
+            if decl_currency and price_str:
+                price_curr = _re.findall(r'[A-Z]{2,4}', price_str)
+                if price_curr and price_curr[0] != decl_currency:
+                    # Replace wrong currency with declaration currency
+                    new_price = price_str.replace(price_curr[0], decl_currency)
+                    auto_fixes.append(f"Item {i+1}: Invoice unit price currency '{price_curr[0]}' → '{decl_currency}' (match declaration)")
+                    item['Invoice unit price'] = new_price
+
+    # Recalculate items_valid/items_total after auto-corrections
+    if auto_fixes:
+        items_valid = 0
+        items_total = 0
+        for iv in item_validations:
+            items_valid += iv['valid_fields']
+            items_total += 6
+
+    if auto_fixes:
+        print(f"\n  Auto-corrections applied: {len(auto_fixes)}")
+        for fix in auto_fixes:
+            print(f"    FIXED: {fix}")
+
+    if cross_issues:
+        print(f"\n  Cross-validation issues:")
+        for issue in cross_issues:
+            print(f"    WARNING: {issue}")
+
     # ── Combined Stats ──
     total_fields = items_total + decl_total
     valid_fields = items_valid + decl_valid
@@ -223,7 +633,21 @@ def cross_validate():
         'field_stats': field_stats,
         'item_validations': item_validations,
         'decl_validations': decl_validations,
+        'cross_validation_issues': cross_issues,
     }
+
+    # Save corrected items/declaration back to claude_extracted.json so downstream steps use fixed data
+    if auto_fixes:
+        claude_file = config.RESULTS_DIR / 'claude_extracted.json'
+        if claude_file.exists():
+            with open(claude_file) as f:
+                claude_data = json.load(f)
+            claude_data['items'] = items
+            claude_data['declaration'] = declaration
+            claude_data['auto_corrections'] = auto_fixes
+            with open(claude_file, 'w', encoding='utf-8') as f:
+                json.dump(claude_data, f, indent=2, ensure_ascii=False)
+            print(f"  Saved {len(auto_fixes)} auto-corrections back to claude_extracted.json")
 
     output_file = config.RESULTS_DIR / 'validated_data.json'
     with open(output_file, 'w', encoding='utf-8') as f:

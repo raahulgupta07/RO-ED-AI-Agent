@@ -22,14 +22,20 @@ DOCUMENT STRUCTURE (auto-detected from PDF analysis):
 
 FORMAT 1: LINE ITEMS (Array of products)
 
-Extract these 6 fields for EACH product item:
+Extract these 6 fields for EACH product item found in the document:
 
-1. Item name: "PRODUCT NAME (CODE) (SIZE) (BRAND: NAME) (C/O: COUNTRY)"
-2. Customs duty rate: DECIMAL (0.15 = 15%)
-3. Quantity (1): "NUMBER+UNIT" (e.g., "16200.00KG")
-4. Invoice unit price: "PRICE+UNIT" (e.g., "69.1358THB")
-5. Commercial tax %: DECIMAL (0.05 = 5%)
-6. Exchange Rate (1): "CURRENCY RATE" (e.g., "THB 65.0025")
+1. Item name: Full product description including brand and country of origin as shown in the document
+2. Customs duty rate: DECIMAL value. 0.15 means 15%, 0.05 means 5%. If the document shows "FREE" or "0%" or customs duty amount is 0, use 0.0
+3. Quantity (1): "NUMBER+UNIT" — extract the exact quantity and unit from the document
+4. Invoice unit price: "PRICE+CURRENCY" — extract from the INVOICE page (the page titled "INVOICE" with columns like "UNIT COST" and "TOTAL AMOUNT"), NOT from the customs declaration page's "Unit price of customs value" which is a different CIF-adjusted number. Use the ACTUAL currency shown on the invoice (could be THB, USD, EUR, etc.)
+5. Commercial tax %: DECIMAL value. 0.05 means 5%. Extract from the document, do NOT assume a value
+6. Exchange Rate (1): "CURRENCY RATE" — extract the actual exchange rate and currency from each item's section in the customs declaration
+
+IMPORTANT FOR ITEMS:
+- Extract ALL product items. Each "No. 001", "No. 002", etc. in the customs declaration is a separate item. The "Total items" field on the first page tells you how many items to expect.
+- Each item may have a DIFFERENT customs duty rate. Some items may be FREE (0.0) while others are 15% (0.15). Extract each item's individual rate.
+- The invoice currency is determined by the invoice page — look for "UNIT COST", "TOTAL AMOUNT", or "THE SUM OF" followed by a currency code.
+- Extract the ACTUAL quantity from each item section. Different items have different quantities — do NOT copy the same quantity for all items.
 
 ═══════════════════════════════════════════════════════════════════
 
@@ -37,17 +43,17 @@ FORMAT 2: DOCUMENT HEADER (Single record for entire declaration)
 
 Extract these 16 fields from the customs declaration pages:
 
-1. Declaration No: Declaration/Entry number (numeric string found on the document)
-2. Declaration Date: Date in YYYY-MM-DD format (e.g., "2025-10-14")
-3. Importer (Name): Company name of importer
-4. Consignor (Name): Company name of consignor/shipper
-5. Invoice Number: Invoice reference number
-6. Invoice Price: Total invoice amount as NUMBER (e.g., 1118432.0)
-7. Currency: Invoice currency code (e.g., "THB")
-8. Exchange Rate: Exchange rate as NUMBER (e.g., 65.0025)
-9. Currency.1: Local currency code (e.g., "MMK")
-10. Total Customs Value: Total customs value as NUMBER
-11. Import/Export Customs Duty: Total customs duty as NUMBER
+1. Declaration No: The UNIQUE declaration/entry number for THIS specific document. It is typically a 12-digit number near "Declaration No" on the first page. Each document has its own unique number — NEVER reuse a number from a different document.
+2. Declaration Date: Date in YYYY-MM-DD format, extracted from THIS document
+3. Importer (Name): The ACTUAL company name of importer as written in the document
+4. Consignor (Name): The ACTUAL company name of consignor/shipper as written on the CUSTOMS DECLARATION page (near "Consignor" field). Do NOT use the shipper name from Form D, Certificate of Origin, or Bill of Lading — use only the customs declaration page.
+5. Invoice Number: The ACTUAL invoice reference number from the document (found on the invoice page or customs declaration page)
+6. Invoice Price: Total invoice amount as NUMBER — this is the TOTAL from the invoice page, usually near "TOTAL TO BE PAID", "SUB TOTAL", or "Total item value". Extract the exact number shown.
+7. Currency: The invoice currency code — determine from the invoice page (THB, USD, EUR, etc.). Do NOT guess — extract it.
+8. Exchange Rate: Exchange rate as NUMBER. In Myanmar documents, commas are THOUSANDS separators (e.g., "2,100" means two thousand one hundred = 2100, NOT 2.1). Extract the full number.
+9. Currency.1: Local currency code (typically MMK for Myanmar)
+10. Total Customs Value: Total customs value as NUMBER (commas are thousands separators)
+11. Import/Export Customs Duty: Total customs duty as NUMBER. If duty is FREE/exempt, use 0
 12. Commercial Tax (CT): Commercial tax amount as NUMBER
 13. Advance Income Tax (AT): Income tax amount as NUMBER
 14. Security Fee (SF): Security fee as NUMBER
@@ -60,15 +66,15 @@ Return ONLY this exact JSON structure:
 
 {{
   "declaration": {{
-    "Declaration No": "<extract from document>",
-    "Declaration Date": "<YYYY-MM-DD from document>",
-    "Importer (Name)": "<extract from document>",
-    "Consignor (Name)": "<extract from document>",
-    "Invoice Number": "<extract from document>",
+    "Declaration No": "<EXTRACT from this document — unique 12-digit number>",
+    "Declaration Date": "<EXTRACT YYYY-MM-DD from this document>",
+    "Importer (Name)": "<EXTRACT actual company name>",
+    "Consignor (Name)": "<EXTRACT actual company name>",
+    "Invoice Number": "<EXTRACT actual invoice number>",
     "Invoice Price ": 0.0,
-    "Currency": "<e.g. THB, USD>",
+    "Currency": "<EXTRACT actual currency from invoice — THB or USD or other>",
     "Exchange Rate": 0.0,
-    "Currency.1": "<e.g. MMK>",
+    "Currency.1": "<EXTRACT local currency>",
     "Total Customs Value ": 0.0,
     "Import/Export Customs Duty ": 0.0,
     "Commercial Tax (CT)": 0.0,
@@ -79,27 +85,32 @@ Return ONLY this exact JSON structure:
   }},
   "items": [
     {{
-      "Item name": "<PRODUCT NAME (BRAND: NAME) (C/O: COUNTRY)>",
+      "Item name": "<EXTRACT actual product name from document>",
       "Customs duty rate": 0.0,
-      "Quantity (1)": "<NUMBER+UNIT e.g. 2400KG>",
-      "Invoice unit price": "<PRICE+UNIT e.g. 129.521THB>",
+      "Quantity (1)": "<EXTRACT actual quantity+unit>",
+      "Invoice unit price": "<EXTRACT actual price+currency>",
       "Commercial tax %": 0.0,
-      "Exchange Rate (1)": "<CURRENCY RATE e.g. THB 64.398>"
+      "Exchange Rate (1)": "<EXTRACT actual currency and rate>"
     }}
   ]
 }}
 
 ALSO: For each item field, provide a confidence score (0.0 to 1.0) indicating how certain you are.
-Add a "_confidence" key next to each field. Example: "Customs duty rate": 0.15, "Customs duty rate_confidence": 0.95
+Add a "_confidence" key next to each field.
 
-CRITICAL:
-- Extract BOTH formats (declaration header + all line items)
-- Use exact field names with spaces and parentheses as shown
-- Declaration is SINGLE object, items is ARRAY
-- Use DECIMAL for percentages (0.15 not 15)
-- Use NUMBER for all financial amounts (no commas, no currency symbols)
-- Include _confidence scores for each item field
-- Return ONLY valid JSON"""
+CRITICAL RULES:
+- Extract ALL values from THIS document only. NEVER invent, guess, or reuse values from examples.
+- If a field cannot be found in the document, use null for strings or 0.0 for numbers.
+- Declaration No is UNIQUE per document — extract the specific number shown on THIS document's first page.
+- Commas in numbers are THOUSANDS separators in Myanmar documents (72,802,800 = 72802800, NOT 72.8028).
+- Determine the ACTUAL invoice currency by reading the invoice page — do NOT assume any default currency.
+- Customs duty rate: extract each item's individual rate. "FREE" = 0.0, "5%" = 0.05, "15%" = 0.15.
+- Use exact field names with spaces and parentheses as shown above.
+- Declaration is SINGLE object, items is ARRAY.
+- Use DECIMAL for percentages (0.15 not 15).
+- Use NUMBER for all financial amounts (no commas, no currency symbols).
+- Include _confidence scores for each item field.
+- Return ONLY valid JSON."""
 
 
 def build_page_structure_description(metadata):
@@ -137,6 +148,70 @@ def _format_page_ranges(page_numbers):
             end = p
     ranges.append(f"{start}" if start == end else f"{start}-{end}")
     return ", ".join(ranges)
+
+MAX_PAGES_FOR_API = 15  # Max pages to send to LLM to stay within token limits
+
+
+def _select_key_pages(pdf_path: str, total_pages: int):
+    """For large PDFs, identify the most important pages to send.
+    Prioritizes: declaration pages, invoice pages, item detail pages.
+    Returns list of 0-indexed page numbers."""
+    if total_pages <= MAX_PAGES_FOR_API:
+        return list(range(total_pages))
+
+    doc = fitz.open(pdf_path)
+    page_scores = []
+
+    for i in range(total_pages):
+        text = doc[i].get_text()
+        score = 0
+        text_upper = text.upper()
+
+        # Declaration pages (highest priority)
+        if 'DECLARATION NO' in text_upper or 'DECLARATION DATE' in text_upper:
+            score += 100
+        if 'CUSTOMS DUTY' in text_upper or 'CUSTOMS VALUE' in text_upper:
+            score += 80
+        if 'COMMERCIAL TAX' in text_upper or 'IMPORT/EXPORT' in text_upper:
+            score += 70
+        if 'ITEM NAME' in text_upper or 'RECONFIRMATION' in text_upper:
+            score += 90
+
+        # Invoice pages (high priority)
+        if 'INVOICE' in text_upper and ('UNIT COST' in text_upper or 'TOTAL AMOUNT' in text_upper):
+            score += 95
+        if 'THE SUM OF' in text_upper:
+            score += 85
+
+        # Packing list (medium priority)
+        if 'PACKING' in text_upper and 'LIST' in text_upper:
+            score += 50
+
+        # Skip low-value pages
+        if 'IMPORT LICENCE' in text_upper or 'IMPORT RECOMMENDATION' in text_upper:
+            score += 5
+        if 'CERTIFICATE OF ORIGIN' in text_upper or 'FORM D' in text_upper:
+            score += 5
+        if 'BILL OF LADING' in text_upper:
+            score += 10
+        if 'REVENUE STAMP' in text_upper or 'ONLINE FEES' in text_upper:
+            score += 0
+
+        # Minimal text = likely image with stamps/signatures
+        if len(text.strip()) < 50:
+            score += 2
+
+        page_scores.append((i, score))
+
+    doc.close()
+
+    # Sort by score descending, take top MAX_PAGES_FOR_API
+    page_scores.sort(key=lambda x: x[1], reverse=True)
+    selected = sorted([p[0] for p in page_scores[:MAX_PAGES_FOR_API]])
+
+    print(f"  Smart page selection: {total_pages} pages → sending {len(selected)} key pages: {[p+1 for p in selected]}")
+    return selected
+
 
 def convert_pdf_to_images(pdf_path: str, pages_to_convert=None):
     """Convert specified pages to base64 images"""
@@ -183,12 +258,30 @@ def extract_structured_data():
     extraction_prompt = EXTRACTION_PROMPT_TEMPLATE.format(page_structure=page_structure)
     print(f"📝 Dynamic prompt built from {metadata['total_pages']}-page analysis\n")
 
-    # Convert all pages to images (dynamic based on actual PDF)
+    # Convert pages to images (smart selection for large PDFs)
     print("📄 Converting pages...", end=" ")
     total_pages = metadata['total_pages']
-    key_pages = list(range(total_pages))
+    key_pages = _select_key_pages(str(config.PDF_PATH), total_pages)
     images = convert_pdf_to_images(str(config.PDF_PATH), key_pages)
     print(f"✓ {len(images)} pages\n")
+
+    # Load raw text from Step 2 as supplementary context
+    raw_text_context = ""
+    text_file = config.RESULTS_DIR / 'text_pages_raw.json'
+    if text_file.exists():
+        try:
+            with open(text_file) as f:
+                text_data = json.load(f)
+            text_parts = []
+            for key in sorted(text_data.keys()):
+                page = text_data[key]
+                if isinstance(page, dict) and page.get('text', '').strip():
+                    text_parts.append(f"--- Page {page.get('page_number', key)} (raw text) ---\n{page['text'][:2000]}")
+            if text_parts:
+                raw_text_context = "\n\nRAW TEXT EXTRACTED FROM PDF (use this to verify values you read from images):\n" + "\n".join(text_parts[:10])
+                print(f"📝 Added raw text context ({len(text_parts)} pages)\n")
+        except Exception:
+            pass
 
     # Build content
     content = []
@@ -197,7 +290,7 @@ def extract_structured_data():
             "type": "image_url",
             "image_url": {"url": f"data:image/png;base64,{img_b64}"}
         })
-    content.append({"type": "text", "text": extraction_prompt})
+    content.append({"type": "text", "text": extraction_prompt + raw_text_context})
 
     payload = {
         "model": config.EXTRACTION_MODEL,
@@ -262,9 +355,161 @@ def extract_structured_data():
                 # Fallback: if old format (just array), treat as items only
                 if not declaration and not items and isinstance(data, list):
                     items = data
+
+                # ── Post-extraction normalization for declaration ──
+                if declaration:
+                    # Strip currency prefix from Exchange Rate (should be a number)
+                    exch = declaration.get('Exchange Rate')
+                    if exch is not None and isinstance(exch, str):
+                        nums = re.findall(r'[\d.]+', str(exch))
+                        if nums:
+                            try:
+                                declaration['Exchange Rate'] = float(nums[0])
+                            except ValueError:
+                                pass
+
+                    # Fix comma-as-decimal in numeric fields
+                    # If a value looks like it was parsed with comma-as-decimal (e.g., 2.1 instead of 2100)
+                    numeric_decl_fields = [
+                        'Invoice Price ', 'Exchange Rate',
+                        'Total Customs Value ', 'Import/Export Customs Duty ',
+                        'Commercial Tax (CT)', 'Advance Income Tax (AT)',
+                        'Security Fee (SF)', 'MACCS Service Fee (MF)', 'Exemption/Reduction'
+                    ]
+                    for field in numeric_decl_fields:
+                        val = declaration.get(field)
+                        if val is None:
+                            # Try without trailing space
+                            val = declaration.get(field.strip())
+                        if isinstance(val, str):
+                            # Remove any currency text, keep numbers
+                            nums = re.findall(r'[\d.]+', val)
+                            if nums:
+                                try:
+                                    declaration[field] = float(nums[0])
+                                except ValueError:
+                                    pass
         except Exception as e:
             print(f"⚠️  JSON parse error: {str(e)[:100]}")
             return None
+
+        # Filter out invalid/junk/annotation rows
+        JUNK_PATTERNS = [
+            'all wrong', 'all informatio', 'color lists', 'not same',
+            'incomplete', 'is wrong', 'are wrong', 'n/a', 'none',
+        ]
+
+        def _is_valid_item(item):
+            name = str(item.get('Item name', '') or '').strip()
+            if not name or name.lower() in ('nan', ''):
+                return False
+            # Check if it's a junk annotation
+            name_lower = name.lower()
+            if any(p in name_lower for p in JUNK_PATTERNS):
+                return False
+            # Check if all 6 fields are empty/None
+            core_fields = ['Item name', 'Customs duty rate', 'Quantity (1)',
+                          'Invoice unit price', 'Commercial tax %', 'Exchange Rate (1)']
+            filled = sum(1 for f in core_fields if item.get(f) is not None and str(item.get(f)).strip() not in ('', 'nan', 'None'))
+            if filled < 2:  # At least item name + 1 other field
+                return False
+            return True
+
+        original_count = len(items)
+        items = [item for item in items if _is_valid_item(item)]
+        if len(items) < original_count:
+            print(f"  Filtered out {original_count - len(items)} invalid/junk rows → {len(items)} valid items remain")
+
+        # ── Post-extraction: fix ÷1000 errors in declaration financial amounts ──
+        if declaration:
+            def _get_decl_num(key):
+                v = declaration.get(key)
+                if v is None:
+                    v = declaration.get(key.strip())
+                try:
+                    return float(v) if v is not None else None
+                except (ValueError, TypeError):
+                    return None
+
+            def _set_decl(key, val):
+                if key in declaration:
+                    declaration[key] = val
+                elif key.strip() in declaration:
+                    declaration[key.strip()] = val
+
+            total_cv = _get_decl_num('Total Customs Value ') or _get_decl_num('Total Customs Value')
+            cd = _get_decl_num('Import/Export Customs Duty ') or _get_decl_num('Import/Export Customs Duty')
+            ct = _get_decl_num('Commercial Tax (CT)')
+            at = _get_decl_num('Advance Income Tax (AT)')
+            sf = _get_decl_num('Security Fee (SF)')
+            mf = _get_decl_num('MACCS Service Fee (MF)')
+
+            # Detect ÷1000 pattern: if sum of taxes > total customs value, amounts are ÷1000
+            if total_cv is not None and cd is not None:
+                tax_sum = sum(x for x in [cd, ct, at] if x is not None and x > 0)
+                if tax_sum > 0 and total_cv > 0 and tax_sum > total_cv * 0.8:
+                    # Taxes exceed 80% of total customs value — likely all amounts are ÷1000
+                    fix_fields = [
+                        'Total Customs Value ', 'Total Customs Value',
+                        'Import/Export Customs Duty ', 'Import/Export Customs Duty',
+                        'Commercial Tax (CT)', 'Advance Income Tax (AT)',
+                        'Security Fee (SF)', 'MACCS Service Fee (MF)', 'Exemption/Reduction'
+                    ]
+                    for fk in fix_fields:
+                        v = _get_decl_num(fk)
+                        if v is not None and v > 0:
+                            _set_decl(fk, v * 1000)
+                    print(f"  Auto-corrected declaration amounts (×1000 — comma-as-decimal detected)")
+                elif total_cv > 0 and cd is not None and cd > total_cv:
+                    # Just customs duty > total value — multiply all by 1000
+                    fix_fields = [
+                        'Total Customs Value ', 'Total Customs Value',
+                        'Import/Export Customs Duty ', 'Import/Export Customs Duty',
+                        'Commercial Tax (CT)', 'Advance Income Tax (AT)',
+                        'Security Fee (SF)', 'MACCS Service Fee (MF)', 'Exemption/Reduction'
+                    ]
+                    for fk in fix_fields:
+                        v = _get_decl_num(fk)
+                        if v is not None and v > 0:
+                            _set_decl(fk, v * 1000)
+                    print(f"  Auto-corrected declaration amounts (×1000 — duty > total value)")
+
+        # ── Post-extraction: fix item-level issues ──
+        if items and declaration:
+            decl_exch = _get_decl_num('Exchange Rate') or _get_decl_num('Exchange Rate ')
+            decl_ccy = str(declaration.get('Currency', '') or '').strip().upper()
+
+            for item in items:
+                # Fix Exchange Rate (1): strip trailing junk, fill in rate from declaration
+                exch_str = str(item.get('Exchange Rate (1)', '') or '').strip()
+                if exch_str:
+                    # Remove trailing dashes, dots, spaces
+                    exch_str = exch_str.rstrip('-. ')
+                    # If it's just a currency code with no number, add the declaration rate
+                    exch_nums = re.findall(r'[\d,.]+', exch_str)
+                    if not exch_nums and decl_exch and decl_ccy:
+                        exch_str = f"{decl_ccy} {decl_exch:g}"
+                    elif not exch_nums and decl_exch:
+                        exch_str = f"{exch_str} {decl_exch:g}"
+                    item['Exchange Rate (1)'] = exch_str
+
+                # Fix Quantity: if qty looks like ÷1000 (e.g., "4 KG" when it should be "4284 KG")
+                qty_str = str(item.get('Quantity (1)', '') or '')
+                qty_nums = re.findall(r'[\d,.]+', qty_str)
+                if qty_nums:
+                    qty_val = float(qty_nums[0].replace(',', ''))
+                    # If qty < 10 and price > 1, likely ÷1000 error
+                    price_str = str(item.get('Invoice unit price', '') or '')
+                    price_nums = re.findall(r'[\d.]+', price_str)
+                    if price_nums:
+                        price_val = float(price_nums[0])
+                        if qty_val < 10 and price_val > 0.5:
+                            # Suspiciously small qty — check if ×1000 makes it reasonable
+                            corrected = qty_val * 1000
+                            unit = re.findall(r'[A-Za-z]+', qty_str)
+                            unit_str = unit[0] if unit else 'KG'
+                            item['Quantity (1)'] = f"{corrected:g} {unit_str}"
+                            print(f"  Auto-corrected item qty: {qty_val} → {corrected} {unit_str}")
 
         # Calculate completeness
         if items:

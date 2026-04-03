@@ -28,10 +28,27 @@ def ask_approval(step_name):
     response = input(f"\n✋ Continue to {step_name}? (yes/no): ").strip().lower()
     return response in ['yes', 'y']
 
+def _clear_previous_results():
+    """Clear previous extraction results to prevent data leakage between runs."""
+    import config
+    stale_files = [
+        config.RESULTS_DIR / 'claude_extracted.json',
+        config.RESULTS_DIR / 'validated_data.json',
+        config.RESULTS_DIR / 'accuracy_report.json',
+        config.RESULTS_DIR / 'pdf_metadata.json',
+        config.RESULTS_DIR / 'text_extracted.json',
+        config.RESULTS_DIR / 'ocr_extracted.json',
+    ]
+    for f in stale_files:
+        if f.exists():
+            f.unlink()
+
+
 def run_pipeline(auto_approve=False):
     """Run complete 7-step pipeline"""
 
     print_banner("PDF EXTRACTION PIPELINE")
+    _clear_previous_results()
     print("7-Step Process:")
     print("  1. Analyze PDF metadata")
     print("  2. Extract TEXT pages (FREE)")

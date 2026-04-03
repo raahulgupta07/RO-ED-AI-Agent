@@ -31,3 +31,11 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Test scripts with local paths
+backend/test_all_ro.py
+
+# Working files (Excel, Word exports)
+AI format.xlsx
+Extract Data Results*.xlsx
+*.docx

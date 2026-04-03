@@ -14,17 +14,20 @@ import fitz
 import config
 
 REVIEW_PROMPT = """You are a quality review agent. Below is extracted data from a Myanmar customs import document.
-Review it for errors and fix any issues.
+Review it against the document images provided and fix any issues.
 
 COMMON ERRORS TO CHECK:
-1. Customs duty rate should be DECIMAL (0.15 not 15). If > 1.0, divide by 100.
+1. Customs duty rate should be DECIMAL (0.15 not 15). If > 1.0, divide by 100. If document shows "FREE" or customs duty amount is 0, rate MUST be 0.0.
 2. Commercial tax % should be DECIMAL (0.05 not 5). If > 1.0, divide by 100.
 3. Quantity should include UNIT (e.g., "16200KG" not "16200").
-4. Invoice unit price should include UNIT (e.g., "69.1358THB" not "69.1358").
-5. Exchange Rate should include CURRENCY (e.g., "THB 65.0025" not "65.0025").
-6. Financial amounts in declaration should be NUMBERS (no commas, no currency symbols).
+4. Invoice unit price should include the ACTUAL currency from the invoice page (e.g., "69.1358THB" if invoice is in THB, "23.2588USD" if invoice is in USD). Check the invoice to determine the correct currency — do NOT assume THB.
+5. Exchange Rate should include the ACTUAL currency from the document (e.g., "THB 65.0025" or "USD 2100"). Check the declaration pages to determine the correct currency — do NOT default to THB.
+6. Financial amounts in declaration should be NUMBERS (no commas, no currency symbols). Remember: commas are THOUSANDS separators in Myanmar documents (2,100 = 2100, NOT 2.1).
 7. Declaration date should be YYYY-MM-DD format.
 8. All fields must be non-empty. Use 0 for missing numeric fields.
+9. Check if any value looks like a PLACEHOLDER or TEMPLATE text (e.g., "COMPANY NAME", "INV-001", "PRODUCT (BRAND: NAME)", "COUNTRY"). These indicate extraction failure — look at the document images and extract the REAL values.
+10. Verify the Declaration No matches what is shown on THIS document's first page. Each document has a unique Declaration No.
+11. Verify customs duty rate matches the document. Do NOT confuse customs duty rate with commercial tax %. They are separate fields — customs duty can be FREE (0.0) while commercial tax is 5% (0.05).
 
 EXTRACTED DATA:
 {extracted_json}
@@ -32,10 +35,10 @@ EXTRACTED DATA:
 Return a JSON object with EXACTLY this structure:
 {{
   "corrections": [
-    {{"item_index": 0, "field": "Customs duty rate", "old_value": 15, "new_value": 0.15, "reason": "Was percentage, converted to decimal"}},
+    {{"item_index": 0, "field": "field_name", "old_value": "old", "new_value": "corrected", "reason": "explanation"}}
   ],
   "declaration_corrections": [
-    {{"field": "Declaration Date", "old_value": "14/10/2025", "new_value": "2025-10-14", "reason": "Fixed date format"}}
+    {{"field": "field_name", "old_value": "old", "new_value": "corrected", "reason": "explanation"}}
   ],
   "corrected_items": [... full corrected items array ...],
   "corrected_declaration": {{... full corrected declaration object ...}}

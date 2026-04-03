@@ -77,31 +77,47 @@ def create_final_excel(job_id=None):
         declaration = claude_data.get('declaration', {})
 
         if declaration:
+            # Flexible key lookup (handles trailing spaces)
+            def _get(key):
+                val = declaration.get(key)
+                if val is None:
+                    val = declaration.get(key + ' ')
+                if val is None:
+                    val = declaration.get(key.strip())
+                if val is None:
+                    for k, v in declaration.items():
+                        if k.strip().lower() == key.strip().lower():
+                            return v
+                return val if val is not None else ''
+
+            # Use extracted local currency instead of hardcoding MMK
+            local_currency = _get('Currency.1') or 'MMK'
+
             # Create single row with all declaration fields
             declaration_row = {
-                'Declaration No': declaration.get('Declaration No', ''),
-                'Declaration Date': declaration.get('Declaration Date', ''),
-                'Importer (Name)': declaration.get('Importer (Name)', ''),
-                'Consignor (Name)': declaration.get('Consignor (Name)', ''),
-                'Invoice Number': declaration.get('Invoice Number', ''),
-                'Invoice Price': declaration.get('Invoice Price ', ''),
-                'Invoice Currency': declaration.get('Currency', ''),
-                'Exchange Rate': declaration.get('Exchange Rate', ''),
-                'Exchange Currency': declaration.get('Currency.1', ''),
-                'Total Customs Value': declaration.get('Total Customs Value ', ''),
-                'Customs Value Currency': 'MMK',
-                'Customs Duty (CD)': declaration.get('Import/Export Customs Duty ', ''),
-                'CD Currency': 'MMK',
-                'Commercial Tax (CT)': declaration.get('Commercial Tax (CT)', ''),
-                'CT Currency': 'MMK',
-                'Advance Income Tax (AT)': declaration.get('Advance Income Tax (AT)', ''),
-                'AT Currency': 'MMK',
-                'Security Fee (SF)': declaration.get('Security Fee (SF)', ''),
-                'SF Currency': 'MMK',
-                'MACCS Service Fee (MF)': declaration.get('MACCS Service Fee (MF)', ''),
-                'MF Currency': 'MMK',
-                'Exemption/Reduction': declaration.get('Exemption/Reduction', ''),
-                'Exemption Currency': 'MMK'
+                'Declaration No': _get('Declaration No'),
+                'Declaration Date': _get('Declaration Date'),
+                'Importer (Name)': _get('Importer (Name)'),
+                'Consignor (Name)': _get('Consignor (Name)'),
+                'Invoice Number': _get('Invoice Number'),
+                'Invoice Price': _get('Invoice Price'),
+                'Invoice Currency': _get('Currency'),
+                'Exchange Rate': _get('Exchange Rate'),
+                'Exchange Currency': local_currency,
+                'Total Customs Value': _get('Total Customs Value'),
+                'Customs Value Currency': local_currency,
+                'Customs Duty (CD)': _get('Import/Export Customs Duty'),
+                'CD Currency': local_currency,
+                'Commercial Tax (CT)': _get('Commercial Tax (CT)'),
+                'CT Currency': local_currency,
+                'Advance Income Tax (AT)': _get('Advance Income Tax (AT)'),
+                'AT Currency': local_currency,
+                'Security Fee (SF)': _get('Security Fee (SF)'),
+                'SF Currency': local_currency,
+                'MACCS Service Fee (MF)': _get('MACCS Service Fee (MF)'),
+                'MF Currency': local_currency,
+                'Exemption/Reduction': _get('Exemption/Reduction'),
+                'Exemption Currency': local_currency
             }
 
             df_declaration = pd.DataFrame([declaration_row])

@@ -40,7 +40,7 @@ import agent_decision_gate
 
 st.set_page_config(
     page_title="RO-ED AI Agent",
-    page_icon="🤖",
+    page_icon="📋",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -95,6 +95,49 @@ st.markdown("""
 
     .stDownloadButton > button { border-radius: 8px; font-weight: 500; }
     .stDataFrame { border-radius: 8px; overflow: hidden; }
+
+    /* Smart table styling — match CityBCPAgent */
+    .stDataFrame [data-testid="stDataFrameContainer"] th {
+        background: #1e293b !important;
+        color: #ffffff !important;
+        font-weight: 600;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+    .stDataFrame [data-testid="stDataFrameContainer"] td {
+        font-size: 13px;
+    }
+
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background: #f8fafc;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.95rem;
+    }
+    .streamlit-expanderHeader:hover {
+        background: #eff6ff;
+        border-color: #3b82f6;
+    }
+
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        font-weight: 600;
+        font-size: 14px;
+    }
+
+    /* Metric cards in main content */
+    [data-testid="stMetricLabel"] {
+        font-size: 12px !important;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #64748b !important;
+    }
 
     /* Secondary button (Reset / New Session) — red outline */
     .stButton > button[kind="secondary"] {
@@ -872,10 +915,10 @@ def render_job_results(job_data, prefix="saved"):
             render_terminal_logs(job_data['log_lines'])
 
     # ══════════════════════════════════════════════════════════════
-    # SECTION 3B: Page-by-Page Content Viewer
+    # SECTION 3B: Page-by-Page Content Viewer (hidden by default)
     # ══════════════════════════════════════════════════════════════
     page_data = job_data.get('page_data', [])
-    if page_data:
+    if page_data and st.checkbox("Show Page-by-Page Content", value=False, key="show_pages"):
         st.markdown("---")
         st.markdown(f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;"><span style="font-size:17px;font-weight:700;color:#0f172a;">Page-by-Page Content</span><span style="background:#6366f1;color:white;font-weight:700;font-size:13px;padding:2px 10px;border-radius:12px;">{len(page_data)} pages</span></div>', unsafe_allow_html=True)
         st.caption("All extracted text and OCR content per page — stored for future reference and re-extraction.")
@@ -1217,6 +1260,8 @@ def render_job_results(job_data, prefix="saved"):
 
 def process_pipeline(pdf_path):
     """Execute the agentic extraction pipeline with self-review, decision gate, and retry."""
+    # Ensure config.PDF_PATH is set (critical for batch mode where st.rerun resets module state)
+    config.PDF_PATH = Path(pdf_path) if pdf_path else config.PDF_PATH
     progress_bar = st.progress(0)
     status_text = st.empty()
     log_container = st.empty()
@@ -1238,6 +1283,13 @@ def process_pipeline(pdf_path):
     _log(f"[PIPELINE] Starting agentic extraction pipeline...")
     _log(f"[PIPELINE] PDF: {Path(pdf_path).name}")
     _log("")
+
+    # Clear previous results to prevent data leakage between runs
+    for stale_file in ['claude_extracted.json', 'validated_data.json', 'accuracy_report.json',
+                       'pdf_metadata.json', 'text_extracted.json', 'ocr_extracted.json']:
+        stale_path = config.RESULTS_DIR / stale_file
+        if stale_path.exists():
+            stale_path.unlink()
 
     # ── Step 1: Scout Agent ──
     _step(1, "Scout Agent", "Analyzing document structure — classifying each page as TEXT or IMAGE")
@@ -1526,6 +1578,14 @@ if 'processing' not in st.session_state:
     st.session_state.processing = False
 if 'uploaded_file_path' not in st.session_state:
     st.session_state.uploaded_file_path = None
+if 'batch_processing' not in st.session_state:
+    st.session_state.batch_processing = False
+if 'batch_files' not in st.session_state:
+    st.session_state.batch_files = []
+if 'batch_results' not in st.session_state:
+    st.session_state.batch_results = []
+if 'batch_complete' not in st.session_state:
+    st.session_state.batch_complete = False
 if 'confirm_delete_job' not in st.session_state:
     st.session_state.confirm_delete_job = None
 if 'job_results' not in st.session_state:
@@ -1542,8 +1602,13 @@ current_user = st.session_state.user
 is_admin = current_user and current_user.get('role') == 'admin'
 
 with st.sidebar:
-    st.markdown("### RO-ED AI Agent")
-    st.caption("Document Intelligence")
+    st.markdown("""
+    <div style="text-align:center;padding:8px 0 4px 0;">
+        <span style="font-size:36px;">📋</span>
+        <div style="color:#ffffff;font-size:17px;font-weight:700;margin-top:4px;">RO-ED AI Agent</div>
+        <div style="color:#94a3b8;font-size:12px;">Document Intelligence</div>
+    </div>
+    """, unsafe_allow_html=True)
     st.markdown("---")
 
     # User info + logout
@@ -1580,7 +1645,13 @@ with st.sidebar:
         st.metric("Cost", f"${stats['total_cost']:.3f}")
 
     st.markdown("---")
-    st.caption("Created by City AI Team")
+    st.markdown("""
+    <div style="text-align:center;padding:4px 0;">
+        <div style="color:#64748b;font-size:11px;">Powered by</div>
+        <div style="color:#94a3b8;font-size:13px;font-weight:600;">City AI Team</div>
+        <div style="color:#475569;font-size:10px;margin-top:2px;">gemini-3.1-flash-lite</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # =============================================================================
 # HEADER
@@ -1588,10 +1659,25 @@ with st.sidebar:
 
 header_col1, header_col2 = st.columns([4, 1])
 with header_col1:
-    st.title("PG : RO-ED AI Agent")
-    st.caption("Myanmar Import PDF Data Extraction Pipeline")
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#0f172a,#1e3a5f);border-radius:16px;padding:24px 32px;display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div>
+            <div style="display:flex;align-items:center;gap:12px;">
+                <span style="font-size:32px;">📋</span>
+                <div>
+                    <div style="color:#ffffff;font-size:24px;font-weight:700;letter-spacing:-0.5px;">PG : RO-ED AI Agent</div>
+                    <div style="color:#94a3b8;font-size:14px;margin-top:2px;">Myanmar Import PDF Data Extraction Pipeline</div>
+                </div>
+            </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+            <span style="background:#3b82f6;color:white;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;">v2.0</span>
+            <span style="display:flex;align-items:center;gap:5px;color:#4ade80;font-size:13px;"><span style="width:8px;height:8px;background:#4ade80;border-radius:50%;display:inline-block;"></span> Online</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 with header_col2:
-    ui.badges(badge_list=[("v1.0", "default"), ("Online", "secondary")], key="header_badges")
+    pass
 
 # =============================================================================
 # TABS
@@ -1805,49 +1891,332 @@ if selected_tab == 'Agent':
 
         render_job_results(job_data)
 
+    # STATE 3B: Batch processing in progress
+    elif st.session_state.get('batch_processing'):
+        st.header("Batch Processing")
+        batch_files = st.session_state.get('batch_files', [])
+        batch_results = st.session_state.get('batch_results', [])
+        batch_idx = len(batch_results)
+
+        if batch_idx < len(batch_files):
+            current_file = batch_files[batch_idx]
+            st.progress(batch_idx / len(batch_files), text=f"Processing {batch_idx + 1}/{len(batch_files)}: {current_file['name']}")
+
+            # Show status table
+            status_data = []
+            for i, bf in enumerate(batch_files):
+                if i < batch_idx:
+                    br = batch_results[i]
+                    status_data.append({"PDF": bf['name'], "Status": "Completed", "Items": br.get('items_count', 0), "Accuracy": f"{br.get('accuracy', 0):.0f}%"})
+                elif i == batch_idx:
+                    status_data.append({"PDF": bf['name'], "Status": "Processing...", "Items": "-", "Accuracy": "-"})
+                else:
+                    status_data.append({"PDF": bf['name'], "Status": "Queued", "Items": "-", "Accuracy": "-"})
+            st.dataframe(status_data, use_container_width=True, hide_index=True)
+
+            # Process current file
+            current_path = Path(current_file['path'])
+            config.PDF_PATH = current_path
+            st.session_state.uploaded_file_path = str(current_path)
+
+            if not current_path.exists():
+                batch_results.append({
+                    'pdf_name': current_file['name'],
+                    'job_id': '',
+                    'items_count': 0,
+                    'accuracy': 0,
+                    'status': f'ERROR: File not found',
+                    'time': 0,
+                })
+            else:
+                pdf_hash = database.calculate_pdf_hash(str(current_path))
+                existing_job = database.find_job_by_hash(pdf_hash)
+
+                if existing_job:
+                    # Skip duplicate — use existing results
+                    batch_results.append({
+                        'pdf_name': current_file['name'],
+                        'job_id': existing_job['job_id'],
+                        'items_count': existing_job.get('total_pages', 0),
+                        'accuracy': existing_job.get('accuracy_percent', 0) or 0,
+                        'status': 'DUPLICATE',
+                        'time': 0,
+                    })
+                else:
+                    try:
+                        process_pipeline(current_path)
+                        jr = st.session_state.job_results or {}
+                        batch_results.append({
+                            'pdf_name': current_file['name'],
+                            'job_id': jr.get('job_id', ''),
+                            'items_count': jr.get('items_count', 0),
+                            'accuracy': jr.get('accuracy', 0),
+                            'status': 'COMPLETED',
+                            'time': jr.get('processing_time', 0),
+                        })
+                    except Exception as e:
+                        batch_results.append({
+                            'pdf_name': current_file['name'],
+                            'job_id': '',
+                            'items_count': 0,
+                            'accuracy': 0,
+                            'status': f'ERROR: {str(e)[:50]}',
+                            'time': 0,
+                        })
+
+            st.session_state.batch_results = batch_results
+            st.session_state.job_results = None  # Clear single job results during batch
+            st.rerun()
+
+        else:
+            # All done
+            st.session_state.batch_processing = False
+            st.session_state.batch_complete = True
+            st.rerun()
+
+    # STATE 3C: Batch complete — show results
+    elif st.session_state.get('batch_complete'):
+        batch_files = st.session_state.get('batch_files', [])
+        batch_results = st.session_state.get('batch_results', [])
+
+        st.header(f"Batch Complete: {len(batch_results)} PDFs")
+
+        # Summary cards
+        completed = sum(1 for r in batch_results if r['status'] == 'COMPLETED')
+        duplicates = sum(1 for r in batch_results if r['status'] == 'DUPLICATE')
+        errors = sum(1 for r in batch_results if r['status'].startswith('ERROR'))
+        total_items = sum(r.get('items_count', 0) for r in batch_results)
+        avg_acc = sum(r.get('accuracy', 0) for r in batch_results if r['status'] in ('COMPLETED', 'DUPLICATE')) / max(completed + duplicates, 1)
+        total_time = sum(r.get('time', 0) for r in batch_results)
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            ui.metric_card(title="Processed", content=str(completed), description=f"+{duplicates} duplicates" if duplicates else "", key="batch_processed")
+        with c2:
+            ui.metric_card(title="Total Items", content=str(total_items), key="batch_items")
+        with c3:
+            ui.metric_card(title="Avg Accuracy", content=f"{avg_acc:.0f}%", key="batch_accuracy")
+        with c4:
+            ui.metric_card(title="Total Time", content=f"{total_time:.0f}s", key="batch_time")
+
+        st.markdown("---")
+
+        # Expandable results per PDF
+        st.subheader("Results")
+
+        _user = st.session_state.get('user', {})
+        if is_admin:
+            _all_jobs = database.get_all_jobs(limit=500)
+        else:
+            _all_jobs = database.get_user_jobs(_user.get('id'), limit=500)
+        _batch_job_ids = set(r.get('job_id', '') for r in batch_results if r.get('job_id'))
+
+        for idx, br in enumerate(batch_results):
+            status_icon = {"COMPLETED": "✅", "DUPLICATE": "🔁", "ERROR": "❌"}.get(br['status'].split(':')[0] if ':' in br['status'] else br['status'], "⚠️")
+            label = f"{status_icon} {br['pdf_name']} — {br['status']} | Items: {br.get('items_count', 0)} | Accuracy: {br.get('accuracy', 0):.0f}%"
+
+            with st.expander(label, expanded=False):
+                job_id = br.get('job_id', '')
+                if not job_id or br['status'].startswith('ERROR'):
+                    st.error(f"Status: {br['status']}")
+                    continue
+
+                details = database.get_job_details(job_id)
+                if not details:
+                    st.warning("Job details not found in database")
+                    continue
+
+                # Build full job_data from database (same format as render_job_results expects)
+                db_items = details.get('items', [])
+                llm_items = [{
+                    'Item name': it.get('item_name', ''),
+                    'Customs duty rate': it.get('customs_duty_rate', 0),
+                    'Quantity (1)': it.get('quantity', ''),
+                    'Invoice unit price': it.get('invoice_unit_price', ''),
+                    'Commercial tax %': it.get('commercial_tax_percent', 0),
+                    'Exchange Rate (1)': it.get('exchange_rate', ''),
+                } for it in db_items]
+
+                db_decl = details['declarations'][0] if details.get('declarations') else {}
+                llm_decl = {
+                    'Declaration No': db_decl.get('declaration_no', ''),
+                    'Declaration Date': db_decl.get('declaration_date', ''),
+                    'Importer (Name)': db_decl.get('importer_name', ''),
+                    'Consignor (Name)': db_decl.get('consignor_name', ''),
+                    'Invoice Number': db_decl.get('invoice_number', ''),
+                    'Invoice Price ': db_decl.get('invoice_price', 0),
+                    'Currency': db_decl.get('currency', ''),
+                    'Exchange Rate': db_decl.get('exchange_rate', 0),
+                    'Currency.1': db_decl.get('currency_2', 'MMK'),
+                    'Total Customs Value ': db_decl.get('total_customs_value', 0),
+                    'Import/Export Customs Duty ': db_decl.get('import_export_customs_duty', 0),
+                    'Commercial Tax (CT)': db_decl.get('commercial_tax_ct', 0),
+                    'Advance Income Tax (AT)': db_decl.get('advance_income_tax_at', 0),
+                    'Security Fee (SF)': db_decl.get('security_fee_sf', 0),
+                    'MACCS Service Fee (MF)': db_decl.get('maccs_service_fee_mf', 0),
+                    'Exemption/Reduction': db_decl.get('exemption_reduction', 0),
+                } if db_decl else {}
+
+                batch_job_data = {
+                    'job_id': job_id,
+                    'pdf_name': details.get('pdf_name', br['pdf_name']),
+                    'pdf_path': details.get('pdf_path', ''),
+                    'processed_by': details.get('username', ''),
+                    'processing_time': details.get('processing_time_seconds', 0) or 0,
+                    'total_pages': details.get('total_pages', 0) or 0,
+                    'text_pages': details.get('text_pages', 0) or 0,
+                    'image_pages': details.get('image_pages', 0) or 0,
+                    'file_size_kb': (details.get('pdf_size', 0) or 0) / 1024,
+                    'cost': details.get('cost_usd', 0) or 0,
+                    'accuracy': details.get('accuracy_percent', 0) or br.get('accuracy', 0),
+                    'items_count': len(llm_items),
+                    'items': llm_items,
+                    'declaration': llm_decl,
+                    'completeness': 100.0 if llm_items else 0,
+                    'field_accuracy': {},
+                    'valid_fields': 0,
+                    'total_fields': 0,
+                    'log_lines': [],
+                    'page_data': [],
+                }
+
+                render_job_results(batch_job_data, prefix=f"batch_{idx}")
+
+        # Combined Excel download
+        st.markdown("---")
+        st.subheader("Download Combined Report")
+
+        # Build combined Excel from database
+        batch_jobs = [j for j in _all_jobs if j['job_id'] in _batch_job_ids] if _batch_job_ids else _all_jobs
+
+        if batch_jobs:
+            all_items = []
+            all_decls = []
+            for job in batch_jobs:
+                details = database.get_job_details(job['job_id'])
+                if details:
+                    for item in details.get('items', []):
+                        item_row = dict(item)
+                        item_row['source_pdf'] = job['pdf_name']
+                        all_items.append(item_row)
+                    for decl in details.get('declarations', []):
+                        decl_row = dict(decl)
+                        decl_row['source_pdf'] = job['pdf_name']
+                        all_decls.append(decl_row)
+
+            if all_items or all_decls:
+                import io
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    if all_items:
+                        items_df = pd.DataFrame(all_items)
+                        drop_cols = [c for c in ['id', 'job_id', 'is_valid', 'created_at'] if c in items_df.columns]
+                        items_df = items_df.drop(columns=drop_cols, errors='ignore')
+                        # Move source_pdf to first column
+                        if 'source_pdf' in items_df.columns:
+                            cols = ['source_pdf'] + [c for c in items_df.columns if c != 'source_pdf']
+                            items_df = items_df[cols]
+                        items_df.to_excel(writer, sheet_name='All Items', index=False)
+
+                    if all_decls:
+                        decls_df = pd.DataFrame(all_decls)
+                        drop_cols = [c for c in ['id', 'job_id', 'is_valid', 'created_at'] if c in decls_df.columns]
+                        decls_df = decls_df.drop(columns=drop_cols, errors='ignore')
+                        if 'source_pdf' in decls_df.columns:
+                            cols = ['source_pdf'] + [c for c in decls_df.columns if c != 'source_pdf']
+                            decls_df = decls_df[cols]
+                        decls_df.to_excel(writer, sheet_name='All Declarations', index=False)
+
+                    # Summary sheet
+                    summary_df = pd.DataFrame(batch_results)
+                    summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+                output.seek(0)
+                st.download_button(
+                    label="Download Combined Excel (All PDFs)",
+                    data=output.getvalue(),
+                    file_name=f"batch_extraction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+        # New session button
+        st.markdown("---")
+        if st.button("New Session", type="secondary", use_container_width=True, key="batch_new_session"):
+            st.session_state.batch_complete = False
+            st.session_state.batch_files = []
+            st.session_state.batch_results = []
+            _do_new_session()
+            st.rerun()
+
     # STATE 3: Upload form
     else:
-        st.header("Process PDF Files")
+        st.markdown("""
+        <div style="text-align:center;padding:16px 0 8px 0;">
+            <span style="font-size:40px;">📄</span>
+            <div style="font-size:22px;font-weight:700;color:#0f172a;margin-top:4px;">Process PDF Files</div>
+            <div style="color:#64748b;font-size:14px;">Upload one or more Myanmar customs PDFs for extraction</div>
+        </div>
+        """, unsafe_allow_html=True)
 
         # Row: Upload | Run Job | New Session
         upload_col, run_col, new_col = st.columns([5, 1, 1])
 
         with upload_col:
-            uploaded_file = st.file_uploader(
-                "Upload PDF",
+            uploaded_files = st.file_uploader(
+                "Upload PDFs",
                 type=['pdf'],
-                help="Upload a Myanmar import PDF to extract customs data",
+                accept_multiple_files=True,
+                help="Upload one or more Myanmar import PDFs to extract customs data",
                 label_visibility="collapsed"
             )
 
         file_ready = False
-        if uploaded_file:
-            if 'last_uploaded_file' not in st.session_state or st.session_state.last_uploaded_file != uploaded_file.name:
-                filepath = save_uploaded_file(uploaded_file)
-                st.session_state.uploaded_file_path = str(filepath)
-                st.session_state.last_uploaded_file = uploaded_file.name
-                if filepath.exists():
-                    file_size = filepath.stat().st_size
-                    st.toast(f"Uploaded: {uploaded_file.name} ({file_size / 1024:.1f} KB)")
-            file_ready = True
+        if uploaded_files:
+            # Save all uploaded files
+            saved_files = []
+            for uf in uploaded_files:
+                filepath = save_uploaded_file(uf)
+                saved_files.append({'name': uf.name, 'path': str(filepath), 'size': filepath.stat().st_size if filepath.exists() else 0})
+            st.session_state.batch_files = saved_files
+
+            if len(uploaded_files) == 1:
+                # Single file — use original flow
+                st.session_state.uploaded_file_path = saved_files[0]['path']
+                st.session_state.last_uploaded_file = uploaded_files[0].name
+                file_ready = True
+            else:
+                file_ready = True
 
         with run_col:
-            if st.button("Run Job", type="primary", use_container_width=True, disabled=not file_ready):
-                st.session_state.processing = True
-                st.rerun()
+            if len(uploaded_files or []) > 1:
+                if st.button("Run All", type="primary", use_container_width=True, disabled=not file_ready):
+                    st.session_state.batch_processing = True
+                    st.session_state.batch_results = []
+                    st.rerun()
+            else:
+                if st.button("Run Job", type="primary", use_container_width=True, disabled=not file_ready):
+                    st.session_state.processing = True
+                    st.rerun()
 
         with new_col:
             if st.button("New Session", type="secondary", use_container_width=True, key="new_session_upload"):
                 _do_new_session()
                 st.rerun()
 
-        # Only show file name confirmation after upload — no preview until Run Job
-        if file_ready and st.session_state.uploaded_file_path:
-            _upload_path = Path(st.session_state.uploaded_file_path)
-            if _upload_path.is_file():
-                _fsize = _upload_path.stat().st_size
-                _fsize_str = f"{_fsize/1024:.0f} KB" if _fsize < 1024*1024 else f"{_fsize/1024/1024:.1f} MB"
-                st.info(f"Ready to process: **{_upload_path.name}** ({_fsize_str}) — Click **Run Job** to start extraction.")
+        # Show file info
+        if uploaded_files:
+            if len(uploaded_files) == 1:
+                _upload_path = Path(st.session_state.uploaded_file_path)
+                if _upload_path.is_file():
+                    _fsize = _upload_path.stat().st_size
+                    _fsize_str = f"{_fsize/1024:.0f} KB" if _fsize < 1024*1024 else f"{_fsize/1024/1024:.1f} MB"
+                    st.info(f"Ready to process: **{_upload_path.name}** ({_fsize_str}) — Click **Run Job** to start extraction.")
+            else:
+                total_size = sum(f['size'] for f in st.session_state.get('batch_files', []))
+                total_str = f"{total_size/1024:.0f} KB" if total_size < 1024*1024 else f"{total_size/1024/1024:.1f} MB"
+                st.info(f"**{len(uploaded_files)} PDFs** selected ({total_str}) — Click **Run All** to process batch.")
 
 # =============================================================================
 # TAB 2: HISTORY
@@ -2196,15 +2565,15 @@ elif selected_tab == 'Product Items':
             return None, s
 
         def _normalize_price(val):
-            """Normalize unit price: NUMBER + UNIT. Fix KG→THB if it's a price field."""
+            """Normalize unit price: NUMBER + UNIT. Fix KG→currency if it's a price field."""
             num, unit = _split_num_unit(val)
             if num is None:
                 return str(val) if val else 'N/A'
             # KG on a price field is a known LLM error — should be currency
             if unit in ('KG', 'CT', 'PC', 'PCS', 'L', 'ML'):
-                unit = 'THB'  # default currency for Myanmar imports
+                unit = '?'  # unknown currency — don't assume
             if not unit:
-                unit = 'THB'
+                unit = '?'
             return f"{num:.4f}{unit}"
 
         def _normalize_exchange(val):
@@ -2213,7 +2582,7 @@ elif selected_tab == 'Product Items':
             if num is None:
                 return str(val) if val else 'N/A'
             if not unit:
-                unit = 'THB'
+                unit = '?'
             return f"{unit} {num:.4f}"
 
         def _normalize_quantity(val):
@@ -2239,15 +2608,15 @@ elif selected_tab == 'Product Items':
                     price_num, price_unit = _split_num_unit(item.get('invoice_unit_price'))
                     exch_num, exch_unit = _split_num_unit(item.get('exchange_rate'))
 
-                    # Fix known LLM errors
+                    # Fix known LLM errors — don't assume currency, mark as unknown
                     if price_unit in ('KG', 'CT', 'PC', 'PCS', 'L', 'ML'):
-                        price_unit = 'THB'
+                        price_unit = '?'
                     if not price_unit:
-                        price_unit = 'THB'
+                        price_unit = '?'
                     if not qty_unit:
                         qty_unit = 'KG'
                     if not exch_unit:
-                        exch_unit = 'THB'
+                        exch_unit = '?'
 
                     all_items_data.append({
                         'Job ID': job['job_id'],
@@ -2341,8 +2710,8 @@ elif selected_tab == 'Declaration Data':
                 decl_pdf_names_set.add(job['pdf_name'])
                 created = job.get('created_at', '') or ''
                 for decl in job_details['declarations']:
-                    inv_currency = decl.get('currency', 'THB') or 'THB'
-                    local_currency = decl.get('currency_2', '') or decl.get('currency.1', '') or 'MMK'
+                    inv_currency = decl.get('currency', '') or decl.get('Currency', '') or '?'
+                    local_currency = decl.get('currency_2', '') or decl.get('currency.1', '') or decl.get('Currency.1', '') or 'MMK'
 
                     all_declarations_data.append({
                         'Job ID': job['job_id'],
