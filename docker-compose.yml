@@ -1,15 +1,16 @@
 services:
   app:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
-    container_name: ro-ed-lang-app
+    container_name: ro-ed-api
     ports:
-      - "8080:8080"
+      - "9000:9000"
     env_file:
       - ./backend/.env
     environment:
       - PYTHONUNBUFFERED=1
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in environment}
     volumes:
       - app-data:/app/data
     restart: unless-stopped
@@ -17,12 +18,12 @@ services:
       resources:
         limits:
           cpus: '2'
-          memory: 2G
+          memory: 4G
         reservations:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '1'
+          memory: 1G
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/_stcore/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

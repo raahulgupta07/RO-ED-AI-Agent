@@ -2,164 +2,144 @@
 
 ## What This Project Is
 
-RO-ED AI Agent — agentic document intelligence system that extracts structured data from Myanmar import customs PDFs. Built by City AI Team.
+RO-ED AI Agent — document intelligence system that extracts structured data from import/export PDF documents. Master + Column Agent architecture with LLM verification and self-learning. Built by City AI Team — City Holdings Myanmar.
 
 ## Tech Stack
 
-- **UI:** Streamlit 1.31 + streamlit-shadcn-ui 0.1.19 + Plotly 5.18
-- **Backend:** Python 3.9
-- **Database:** SQLite with WAL mode, FTS5 full-text search (auto-created at backend/data/extraction_history.db)
-- **AI:** OpenRouter API (google/gemini-3.1-flash-lite-preview for OCR + extraction + review)
-- **Auth:** bcrypt password hashing, role-based access (admin/user), persistent sessions, session timeout
-- **Container:** Docker (single service, non-root user, resource limits)
-- **PDF Processing:** PyMuPDF (fitz)
+- **Frontend:** SvelteKit 5 (Svelte 5 runes) + TailwindCSS 4.2
+- **Backend:** FastAPI 0.115 + Uvicorn (Python 3.12)
+- **Database:** SQLite with WAL mode + 30s busy_timeout, 25+ tables
+- **AI Models:** OpenRouter API (per-step model config)
+  - Vision + Assembler: Google Gemini 3 Flash Preview (page extraction + table building)
+  - Verifier: Anthropic Claude Sonnet 4.6 (cross-checks against images)
+- **Auth:** Dual-mode — Local JWT (HS256) + Keycloak OIDC (RS256 via PKCE)
+- **Container:** Docker (single service, 4GB RAM, non-root user)
+- **PDF Processing:** PyMuPDF (fitz) at 300 DPI + Pillow enhancement. NO Tesseract.
 
 ## Project Structure
 
 ```
 RO-ED-Lang/
-├── README.md                  # Installation & usage guide
-├── CLAUDE.md                  # This file
-├── docker-compose.yml         # Single service + named volume + resource limits
-├── start-docker.sh            # One-command startup
-├── .gitignore                 # Protects .env, data/, logs
-├── .dockerignore
+├── CLAUDE.md / README.md
+├── Dockerfile / docker-compose.yml
+├── frontend/
+│   └── src/
+│       ├── lib/
+│       │   ├── api.ts                     # API client (handles redirect + auth)
+│       │   ├── colors.ts                  # Theme + dynamic page type colors
+│       │   └── components/
+│       │       ├── ResultAccordion.svelte  # THE main component — tables, PDF, search, map, log
+│       │       ├── PipelineVisualizer.svelte # Flow diagram (step boxes with arrows)
+│       │       ├── AgentTerminal.svelte    # CLI-style streaming log
+│       │       ├── PageDetail.svelte       # Per-page image + extracted data
+│       │       └── Header.svelte           # Navigation
+│       └── routes/
+│           ├── agent/        # Upload + extract + results (persisted via localStorage)
+│           ├── history/      # Job list + detail (uses ResultAccordion)
+│           ├── review/       # Confidence-based queue (≥95% auto, <80% escalate)
+│           ├── items/        # All items across jobs
+│           ├── declarations/ # All declarations across jobs
+│           ├── costs/        # Cost tracking + charts
+│           ├── settings/     # Users + Auth + Groups
+│           └── login/
 └── backend/
-    ├── .env.example           # API key template
-    ├── .env                   # Real API key (not in git)
-    ├── config.py              # All settings (models, thresholds, paths) + API key validation
-    ├── database.py            # SQLite ops (WAL, bcrypt auth, FTS5 search, activity logs, parameterized queries)
-    ├── streamlit_app.py       # Main UI (~2300 lines, 6 tabs, Plotly charts, persistent auth)
-    ├── step1_analyze_metadata.py     # Page classification (TEXT/IMAGE)
-    ├── step1b_filter_agent.py        # LLM vision filter (skip photos/stamps)
-    ├── step2_extract_text_pages.py   # PyMuPDF text extraction
-    ├── step3_ocr_image_pages.py      # Parallel OCR + retry + adaptive res
-    ├── step4_claude_structured_extraction.py  # AI extraction + confidence (generic prompt examples)
-    ├── step4b_self_review.py         # Self-review agent (with document images)
-    ├── step5_cross_validate.py       # Validation (items + declaration)
-    ├── step6_accuracy_matrix.py      # Field-level accuracy
-    ├── step7_create_final_excel.py   # 2-sheet Excel output
-    ├── agent_decision_gate.py        # Decision gate (accept/fix/retry/escalate) with images + confidence
-    ├── run_complete_pipeline.py      # CLI runner
-    ├── Dockerfile                    # Non-root user, production Streamlit flags
-    ├── requirements.txt
-    └── data/                         # Auto-created, not in git
-        ├── uploads/
-        ├── results/
-        └── extraction_history.db
+    ├── main.py              # FastAPI app (v3.0.0, CORS *, redirect handling)
+    ├── config.py            # Models: VISION_MODEL, ASSEMBLER_MODEL, VERIFIER_MODEL
+    ├── auth.py / database.py / schemas.py / middleware.py
+    ├── routes/
+    │   ├── auth.py          # Login, JWT, Keycloak
+    │   ├── jobs.py          # Upload (10 files max, 50MB each), details, Excel, annotated PDF
+    │   ├── ws.py            # WebSocket — real-time pipeline streaming
+    │   ├── corrections.py   # User corrections → few-shot learning
+    │   ├── data.py / users.py / settings.py / groups.py
+    ├── pipeline/            # THE extraction pipeline
+    │   ├── splitter.py      # PDF → 300 DPI HD images (PyMuPDF + Pillow)
+    │   ├── vision.py        # Per-page agents (parallel, semaphore=16) + QA gate
+    │   ├── assembler.py     # Master + Column Agents:
+    │   │                      Declaration Master (16 column agents, json_schema)
+    │   │                      Items Master (9 column agents, json_schema)
+    │   │                      QA after each + cross-validation
+    │   │                      Token-optimized (dedup fields, no metadata)
+    │   ├── verifier.py      # Claude Sonnet cross-checks against page images
+    │   └── pipeline.py      # Orchestrator (memory cleanup after verifier)
+    ├── v2/                  # Shared utilities
+    │   ├── confidence.py    # Per-field confidence scoring
+    │   ├── step5_report.py  # Save results to DB (per-job files)
+    │   └── step4_validate.py
+    └── agents/
+        └── advanced.py      # Myanmar language, PDF annotation
 ```
 
-## Key Architecture Decisions
-
-- **Single container** — no PostgreSQL, no Redis, no frontend server. Just Streamlit.
-- **SQLite + WAL mode** — auto-creates on first run, WAL for concurrent reads, FTS5 for document search. All queries use parameterized `?` placeholders (no f-string SQL).
-- **OpenRouter** — single API key accesses all models. Only env var the app needs.
-- **Agentic pipeline** — 10 steps with self-review (with images), decision gate (with images + confidence), retry logic.
-- **Persistent sessions** — auth saved to `data/results/_auth_session.json`, survives browser refresh. Validated against DB on restore (checks user still active).
-- **Global duplicate detection** — PDF hash (SHA256) checked across ALL users. If User A processed a PDF, User B cannot re-upload the same file. Only original user or admin can reprocess.
-- **User isolation** — jobs, page content, stats scoped to user_id. Admins see all. Each job stores `user_id` + `username`.
-- **bcrypt auth** — passwords hashed with bcrypt + salt. Legacy SHA256 auto-migrated on login.
-- **Non-root Docker** — container runs as appuser (UID 1000).
-
-## Pipeline Flow
+## Pipeline Architecture
 
 ```
-PDF → Step 1: Classify pages (TEXT vs IMAGE)
-    → Step 1B: Filter Agent (skip photos/stamps via LLM vision)
-    → Step 2: Extract text pages (PyMuPDF, free)
-    → Step 3: OCR image pages (parallel, retry, adaptive resolution)
-    → Step 4: AI extraction (all pages as images + confidence scores)
-    → Step 4B: Self-review agent (with document images — auto-corrects decimals, units, formats)
-    → Step 5: Cross-validate (items 6 fields + declaration 16 fields)
-    → Step 6: Decision gate (uses validation accuracy + confidence scores)
-        ├── ≥90% accuracy → ACCEPT
-        ├── 60-89% → FIX specific fields via targeted LLM call (with images)
-        ├── 30-59% → FULL re-extraction (re-runs Step 4 + 4B, compares against previous accuracy)
-        └── <30% → ESCALATE for human review
-    → Step 7: Accuracy matrix
-    → Step 8: Generate Excel
-    → Save page content to DB (for Document Search / RAG)
+PDF Upload
+  → Step 1:  SPLITTER          — PDF → HD images (300 DPI)
+  → Step 2:  VISION AGENTS     — Per-page (gemini-3-flash, parallel, 8 workers)
+  → Step 3:  VISION QA         — Re-run bad pages only
+  → Step 4:  DECLARATION AGENT — 16 column agents (json_schema enforced)
+  → Step 5:  DECLARATION QA    — Re-run missing fields only
+  → Step 6:  ITEMS AGENT       — 9 column agents (json_schema enforced)
+  → Step 7:  ITEMS QA          — Re-run missing fields only
+  → Step 8:  CROSS-VALIDATION  — Items sum = declaration total
+  → Step 9:  VERIFIER          — Claude Sonnet checks against page images
+  → Save to DB + Excel
 ```
 
-## Database Schema (SQLite + WAL + FTS5)
+## Models
 
-Tables: `jobs`, `items`, `declarations`, `processing_logs`, `pdf_metadata`, `users`, `activity_logs`, `page_contents`, `page_contents_fts`
+| Step | Model | Cost |
+|------|-------|------|
+| Vision (per page) | google/gemini-3-flash-preview | ~$0.002/page |
+| Declaration + Items + QA | google/gemini-3-flash-preview | ~$0.02 |
+| Verifier | anthropic/claude-sonnet-4-6 | ~$0.12 |
+| **Total** | | **~$0.14-0.18/PDF** |
 
-Key columns on `jobs`: `user_id`, `username` — links every job to the user who ran it.
+## Key Design Principles
 
-Key features:
-- `database._connect()` — creates connection with WAL, NORMAL sync, 64MB cache, foreign keys ON, 10s timeout
-- `database.init_database()` — auto-creates all tables with migration support (ALTER TABLE for new columns)
-- `page_contents_fts` — FTS5 virtual table with porter stemming for full-text search
-- All passwords hashed with bcrypt (auto-migrates old SHA256 on login)
-- All SQL queries use parameterized `?` placeholders — no f-string SQL construction
+- **Zero hardcoded values** — no field names, currencies, tax codes in code
+- **Zero calculations** — every value read directly from document
+- **json_schema enforced** — guarantees valid JSON, all required fields present
+- **Token optimized** — deduplicated fields, no metadata/visual/entities sent to assembler
+- **Correction Memory** — user corrections feed back as few-shot examples
+- **Per-job isolation** — each job gets own files, own cost tracker, no global state
+- **Memory cleanup** — image data freed after verifier step
 
-## Auth & Roles
+## Concurrency (10 users)
 
-- **admin** — sees all users' jobs, user management tab, activity logs, global stats, can reprocess any PDF
-- **user** — sees only own jobs, own stats, no user management, cannot reprocess PDFs uploaded by other users
-- Default admin: `admin` / `admin123` (change immediately in production)
-- Sessions persist across browser refresh via `_auth_session.json` (validated against DB on restore)
-- Session timeout: 1 hour (skipped if "Remember me" checked)
-- On restore: verifies user still exists and is active in DB before granting access
-- Activity log tracks: LOGIN, LOGOUT, RUN_JOB, DELETE_JOB, CREATE_USER, UPDATE_USER, DELETE_USER
+- SQLite WAL mode + 30s busy_timeout
+- API semaphore: max 16 simultaneous OpenRouter calls
+- Per-job file isolation (no overwrites)
+- Docker: 4GB RAM, 2 CPUs
+- Upload: max 10 files/batch, 50MB/file
+- Uvicorn: concurrency limit 20, keep-alive 300s
 
 ## Duplicate Detection
 
-- PDF hash (SHA256) is checked **globally across all users** before processing
-- If the same PDF was already processed by ANY user:
-  - Shows who processed it and when
-  - "View Results" button loads existing results
-  - "Reprocess Anyway" only available to original user or admin
-  - Regular users see disabled button with message: "Only {user} or admin can reprocess"
-- Results header shows "By: {username}" badge so you always know who ran the extraction
+Upload API hashes PDF (SHA256), checks DB. User sees: VIEW RESULTS (free) | RE-PROCESS (double confirmation) | CANCEL.
 
-## UI Tabs (streamlit_app.py)
+## UI Architecture
 
-1. **Agent** — Upload PDF, run extraction, view results (KPI cards + Plotly gauge/bar charts + tables + PDF preview + "By: user" badge)
-2. **History** — Jobs with filters, Plotly timeline + accuracy charts, expandable details. Admin sees "User" column + all jobs. Users see only own jobs.
-3. **Product Items** — Consolidated items table across jobs with filters and export (per-user scoped)
-4. **Declaration Data** — Consolidated declarations across jobs with filters and export (per-user scoped)
-5. **Document Search** — FTS5 search across all page content, Plotly treemap + stacked bar, export CSV (per-user scoped)
-6. **User Management** (admin only) — Create/edit/delete users + Activity Log with filters
+ResultAccordion is THE main component (agent + history):
+- Tabs: RESULTS | PDF (ANNOTATED) | PIPELINE LOG
+- RESULTS: Pipeline Visualizer → KPIs → Confidence → Insights → Items table → Declaration table → Corrections Log → Document Summary → Field Search → Document Map (expandable)
 
-## Config Reference (backend/config.py)
+## Production Deployment
 
-Required env var: `OPENROUTER_API_KEY`
-Optional env var: `ADMIN_DEFAULT_PASSWORD` (defaults to admin123)
-
-Key settings:
-- `OCR_MODEL` / `EXTRACTION_MODEL` / `REVIEW_MODEL` — all set to google/gemini-3.1-flash-lite-preview
-- `MAX_RETRIES=3`, `RETRY_BACKOFF_BASE=2` — retry with 2s, 4s, 8s backoff
-- `ACCURACY_ACCEPT=90`, `ACCURACY_FIX=60`, `ACCURACY_RETRY=30` — decision gate thresholds
-- `CONFIDENCE_THRESHOLD=0.7` — fields below this flagged for review + re-extraction
-- `OCR_RESOLUTION=3`, `OCR_HIRES_RESOLUTION=5` — adaptive OCR resolution
-
-## Common Tasks
-
-- **Change AI model:** Edit `config.py` lines 46-48, rebuild container
-- **Change port:** Edit `docker-compose.yml` ports section
-- **Reset data:** `docker-compose down -v && docker-compose up -d --build`
-- **Add new extraction field:** Update prompt in step4, validation in step5, Excel in step7, UI in streamlit_app.py
-- **Change session timeout:** Edit `SESSION_TIMEOUT` in streamlit_app.py (default 3600s)
-- **Change default admin password:** Set `ADMIN_DEFAULT_PASSWORD` env var before first run
-
-## Known Fixes Applied
-
-- Extraction prompt uses generic placeholders (not real data) to prevent LLM copying example values
-- `fix_fields()` and `self_review()` send document images to LLM (not text-only)
-- FULL_RETRY compares re-extraction accuracy against previous validation accuracy (not completeness)
-- `get_failed_fields()` always receives `extracted_data` for confidence-based field selection
-- `pandas.style.map()` used instead of deprecated `applymap()`
-- Auth restore validates user still exists and is active in DB before granting session
+```bash
+export JWT_SECRET_KEY="$(openssl rand -hex 32)"
+# Set OPENROUTER_API_KEY in backend/.env
+docker-compose up -d --build
+```
 
 ## Don't
 
-- Don't rename `step4_claude_structured_extraction.py` — imported by name everywhere
-- Don't use `ui.select()`, `ui.date_picker()`, `ui.hover_card()`, `ui.progress()` — they crash with Streamlit 1.31 (stylable_container key bug). Use native `st.selectbox`, `st.date_input`, `st.progress` instead.
-- Don't commit `backend/.env` — contains real API key
-- Don't use `from config import PDF_PATH` — use `config.PDF_PATH` (it's set dynamically)
-- Don't put real data in extraction prompt examples — LLM will copy them instead of extracting from document
-- Don't use `sqlite3.connect()` directly — use `database._connect()` for WAL mode and proper settings
-- Don't use f-strings to build SQL queries — always use `?` parameterized queries
-- Don't use `pandas.style.applymap()` — use `.map()` (applymap deprecated in pandas 2.1+)
+- Don't use Tesseract
+- Don't add calculations to prompts
+- Don't hardcode field names, currencies, or patterns
+- Don't commit `backend/.env`
+- Don't use `sqlite3.connect()` — use `database._connect()`
+- Don't use bare `except:` — use `except Exception:`
+- Don't mutate global state
+- Don't skip pages (data could be anywhere)
+- Don't use `json_object` mode (9x slower than `json_schema`)

@@ -1,41 +1,29 @@
-# Secrets
-backend/.env
-.env
-*.key
-*.pem
-
 # Python
 __pycache__/
 *.pyc
-*.pyo
+.venv/
 *.egg-info/
 
-# Data (user uploads and results)
+# Environment
+backend/.env
+.env
+
+# Data (don't push user data)
 backend/data/uploads/
 backend/data/results/
-backend/data/jobs/
 backend/data/extraction_history.db
-data/
 
-# Docker
-postgres_data/
-
-# OS
-.DS_Store
-Thumbs.db
+# Frontend build
+frontend/node_modules/
+frontend/build/
+frontend/.svelte-kit/
+backend/frontend-build/
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
+.DS_Store
 
-# Logs
-*.log
-
-# Test scripts with local paths
-backend/test_all_ro.py
-
-# Working files (Excel, Word exports)
-AI format.xlsx
-Extract Data Results*.xlsx
-*.docx
+# Backup
+*-BACKUP-*/

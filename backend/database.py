@@ -18,17 +18,18 @@ logger = logging.getLogger(__name__)
 # Database file location
 DB_PATH = Path(__file__).parent / "data" / "extraction_history.db"
 
-# Connection timeout (seconds)
-DB_TIMEOUT = 10.0
+# Connection timeout (seconds) — higher for concurrent users
+DB_TIMEOUT = 30.0
 
 
 def _connect():
-    """Create a database connection with proper settings."""
+    """Create a database connection with proper settings for concurrent access."""
     conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA cache_size = -64000")
+    conn.execute("PRAGMA busy_timeout = 30000")  # 30s wait on lock instead of failing
     return conn
 
 def init_database():
@@ -78,6 +79,9 @@ def init_database():
             invoice_unit_price TEXT,
             commercial_tax_percent REAL,
             exchange_rate TEXT,
+            hs_code TEXT,
+            origin_country TEXT,
+            customs_value_mmk REAL,
             is_valid INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (job_id) REFERENCES jobs(job_id)
@@ -211,6 +215,26 @@ def init_database():
     except Exception:
         pass
 
+    # Settings table — key-value store for app configuration
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_by TEXT
+        )
+    """)
+
+    # Keycloak migration: add keycloak_id and email to users
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN keycloak_id TEXT UNIQUE")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    except Exception:
+        pass
+
     # Create default admin if no users exist
     cursor.execute("SELECT COUNT(*) FROM users")
     if cursor.fetchone()[0] == 0:
@@ -222,6 +246,152 @@ def init_database():
             VALUES ('admin', ?, 'Administrator', 'admin')
         """, (admin_hash,))
         logger.info("Created default admin user")
+
+    # Groups table — RBAC permission groups
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT '',
+            page_agent INTEGER DEFAULT 1,
+            page_history INTEGER DEFAULT 1,
+            page_items INTEGER DEFAULT 1,
+            page_declarations INTEGER DEFAULT 1,
+            page_costs INTEGER DEFAULT 1,
+            page_settings INTEGER DEFAULT 0,
+            action_run_pipeline INTEGER DEFAULT 1,
+            action_upload_pdf INTEGER DEFAULT 1,
+            action_download_excel INTEGER DEFAULT 1,
+            action_delete_jobs INTEGER DEFAULT 0,
+            action_export_data INTEGER DEFAULT 1,
+            data_scope TEXT DEFAULT 'own',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # User-group assignments (many-to-many)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_groups (
+            user_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            assigned_by TEXT,
+            PRIMARY KEY (user_id, group_id),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )
+    """)
+
+    # Create default "Users" group if no groups exist
+    cursor.execute("SELECT COUNT(*) FROM groups")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+            INSERT INTO groups (name, description, page_agent, page_history, page_items,
+                page_declarations, page_costs, page_settings, action_run_pipeline,
+                action_upload_pdf, action_download_excel, action_delete_jobs,
+                action_export_data, data_scope)
+            VALUES ('Users', 'Default group for all users', 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 'own')
+        """)
+        logger.info("Created default 'Users' group (no settings access, no delete)")
+
+    # Page extractions table — v2 per-page structured data
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS page_extractions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            page_number INTEGER NOT NULL,
+            page_type TEXT,
+            language TEXT,
+            confidence REAL,
+            explanation TEXT,
+            doc_title TEXT,
+            doc_issuer TEXT,
+            doc_date TEXT,
+            doc_reference TEXT,
+            doc_country TEXT,
+            fields_json TEXT,
+            items_json TEXT,
+            amounts_json TEXT,
+            entities_json TEXT,
+            has_logo INTEGER DEFAULT 0,
+            has_stamp INTEGER DEFAULT 0,
+            has_signature INTEGER DEFAULT 0,
+            has_barcode INTEGER DEFAULT 0,
+            visual_quality TEXT,
+            raw_char_count INTEGER DEFAULT 0,
+            orientation TEXT,
+            pipeline_version TEXT DEFAULT 'v2',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_page_ext_job ON page_extractions(job_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_page_ext_type ON page_extractions(page_type)")
+
+    # Add pipeline_version to jobs table
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN pipeline_version TEXT DEFAULT 'v1'")
+    except Exception:
+        pass
+
+    # Add cross_validation_json to jobs table
+    try:
+        cursor.execute("ALTER TABLE jobs ADD COLUMN cross_validation_json TEXT")
+    except Exception:
+        pass
+
+    # Importer profiles — learned patterns per importer
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS importer_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            importer_name TEXT NOT NULL,
+            importer_name_normalized TEXT NOT NULL,
+            currency TEXT,
+            exchange_rate_min REAL,
+            exchange_rate_max REAL,
+            exchange_rate_avg REAL,
+            common_consignor TEXT,
+            common_items TEXT,
+            total_jobs INTEGER DEFAULT 0,
+            last_job_date TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_importer_normalized ON importer_profiles(importer_name_normalized)")
+    except Exception:
+        pass
+
+    # Field accuracy tracker — which fields fail per importer
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS field_accuracy (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            importer_name_normalized TEXT NOT NULL,
+            field_key TEXT NOT NULL,
+            total_extractions INTEGER DEFAULT 0,
+            corrections_count INTEGER DEFAULT 0,
+            last_correction_at TEXT,
+            UNIQUE(importer_name_normalized, field_key)
+        )
+    """)
+
+    # Value audit trail — tracks every change to an extracted value
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS value_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            table_key TEXT NOT NULL,
+            field_key TEXT NOT NULL,
+            item_index INTEGER,
+            stage TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+        )
+    """)
 
     # Create indexes for faster queries
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC)")
@@ -236,6 +406,67 @@ def init_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_job ON page_contents(job_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_user ON page_contents(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_pdf ON page_contents(pdf_name)")
+
+    # Clean up stale PROCESSING jobs from previous crashes/restarts
+    cursor.execute("""
+        UPDATE jobs SET status = 'FAILED', error_message = 'Server restarted during processing'
+        WHERE status = 'PROCESSING'
+    """)
+    stale = cursor.rowcount
+    if stale:
+        logger.info(f"Cleaned up {stale} stale PROCESSING job(s)")
+
+    # Add new item columns if not exist (for existing DBs)
+    try:
+        cursor.execute("ALTER TABLE items ADD COLUMN hs_code TEXT")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE items ADD COLUMN origin_country TEXT")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE items ADD COLUMN customs_value_mmk REAL")
+    except Exception:
+        pass
+
+    # Corrections table — stores user corrections for self-learning
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            profile_id INTEGER DEFAULT 1,
+            table_key TEXT NOT NULL,
+            field_key TEXT NOT NULL,
+            item_index INTEGER,
+            original_value TEXT,
+            corrected_value TEXT NOT NULL,
+            correction_type TEXT DEFAULT 'wrong_value',
+            page_source INTEGER,
+            raw_text_context TEXT,
+            user_id INTEGER,
+            username TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Learning events — audit trail for auto-generated rules
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS learning_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_id INTEGER DEFAULT 1,
+            event_type TEXT NOT NULL,
+            event_data TEXT,
+            trigger_correction_id INTEGER,
+            corrections_analyzed INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Indexes for corrections
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_corrections_job ON corrections(job_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_corrections_profile ON corrections(profile_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_corrections_field ON corrections(table_key, field_key)")
 
     conn.commit()
     conn.close()
@@ -324,8 +555,9 @@ def save_items(job_id: str, items: List[Dict]):
     for item in items:
         cursor.execute("""
             INSERT INTO items (job_id, item_name, customs_duty_rate, quantity,
-                             invoice_unit_price, commercial_tax_percent, exchange_rate)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                             invoice_unit_price, commercial_tax_percent, exchange_rate,
+                             hs_code, origin_country, customs_value_mmk)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             job_id,
             item.get('Item name', ''),
@@ -333,7 +565,10 @@ def save_items(job_id: str, items: List[Dict]):
             item.get('Quantity (1)', ''),
             item.get('Invoice unit price', ''),
             item.get('Commercial tax %', 0.0),
-            item.get('Exchange Rate (1)', '')
+            item.get('Exchange Rate (1)', ''),
+            item.get('HS Code', ''),
+            item.get('Origin Country', ''),
+            item.get('Customs Value (MMK)', 0.0),
         ))
 
     conn.commit()
@@ -363,12 +598,12 @@ def save_declarations(job_id: str, declarations: List[Dict]):
             decl.get('Importer (Name)', ''),
             decl.get('Consignor (Name)', ''),
             decl.get('Invoice Number', ''),
-            decl.get('Invoice Price ', 0.0),
+            decl.get('Invoice Price', 0.0),
             decl.get('Currency', ''),
             decl.get('Exchange Rate', 0.0),
             decl.get('Currency.1', ''),
-            decl.get('Total Customs Value ', 0.0),
-            decl.get('Import/Export Customs Duty ', 0.0),
+            decl.get('Total Customs Value', 0.0),
+            decl.get('Import/Export Customs Duty', 0.0),
             decl.get('Commercial Tax (CT)', 0.0),
             decl.get('Advance Income Tax (AT)', 0.0),
             decl.get('Security Fee (SF)', 0.0),
@@ -516,6 +751,15 @@ def get_job_details(job_id: str) -> Optional[Dict]:
     metadata_row = cursor.fetchone()
     if metadata_row:
         job_dict['pdf_metadata'] = json.loads(metadata_row['metadata_json'])
+
+    # Parse cross_validation JSON if present
+    if job_dict.get('cross_validation_json'):
+        try:
+            job_dict['cross_validation'] = json.loads(job_dict['cross_validation_json'])
+        except (json.JSONDecodeError, TypeError):
+            job_dict['cross_validation'] = None
+    else:
+        job_dict['cross_validation'] = None
 
     conn.close()
     return job_dict
@@ -965,6 +1209,644 @@ def get_user_stats(user_id: int) -> Dict:
 
     conn.close()
     return {'total_jobs': total, 'completed_jobs': completed, 'avg_accuracy': avg_acc, 'total_cost': total_cost}
+
+
+# =============================================================================
+# SETTINGS — KEY-VALUE STORE
+# =============================================================================
+
+def get_setting(key: str) -> Optional[str]:
+    """Get a single setting value by key."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def set_setting(key: str, value: str, updated_by: str = "system"):
+    """Set a single setting value (upsert)."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO settings (key, value, updated_at, updated_by)
+        VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
+    """, (key, value, updated_by, value, updated_by))
+    conn.commit()
+    conn.close()
+
+
+def get_settings_by_prefix(prefix: str) -> Dict:
+    """Get all settings matching a prefix as a dict."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT key, value, updated_at, updated_by FROM settings WHERE key LIKE ?", (f"{prefix}%",))
+    rows = cursor.fetchall()
+    conn.close()
+    return {row["key"]: {"value": row["value"], "updated_at": row["updated_at"], "updated_by": row["updated_by"]} for row in rows}
+
+
+def delete_settings_by_prefix(prefix: str):
+    """Delete all settings matching a prefix."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM settings WHERE key LIKE ?", (f"{prefix}%",))
+    conn.commit()
+    conn.close()
+
+
+# =============================================================================
+# CORRECTIONS — Self-Learning
+# =============================================================================
+
+def save_correction(job_id: str, profile_id: int, table_key: str, field_key: str,
+                    item_index: int, original_value: str, corrected_value: str,
+                    correction_type: str = "wrong_value", user_id: int = None,
+                    username: str = None) -> int:
+    """Save a user correction. Returns correction id."""
+    conn = _connect()
+    conn.execute("PRAGMA foreign_keys = OFF")  # Corrections can reference any job_id
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO corrections (job_id, profile_id, table_key, field_key,
+            item_index, original_value, corrected_value, correction_type,
+            user_id, username)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (job_id, profile_id, table_key, field_key, item_index,
+          str(original_value), str(corrected_value), correction_type,
+          user_id, username))
+    correction_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return correction_id
+
+
+def get_corrections(profile_id: int = None, job_id: str = None,
+                    table_key: str = None, field_key: str = None,
+                    limit: int = 100) -> list:
+    """Query corrections with optional filters."""
+    conn = _connect()
+    query = "SELECT * FROM corrections WHERE 1=1"
+    params = []
+    if profile_id:
+        query += " AND profile_id = ?"
+        params.append(profile_id)
+    if job_id:
+        query += " AND job_id = ?"
+        params.append(job_id)
+    if table_key:
+        query += " AND table_key = ?"
+        params.append(table_key)
+    if field_key:
+        query += " AND field_key = ?"
+        params.append(field_key)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    columns = ["id", "job_id", "profile_id", "table_key", "field_key",
+               "item_index", "original_value", "corrected_value",
+               "correction_type", "page_source", "raw_text_context",
+               "user_id", "username", "created_at"]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def get_correction_stats(profile_id: int = 1) -> list:
+    """Get correction counts grouped by table_key + field_key."""
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT table_key, field_key, COUNT(*) as count,
+               MIN(created_at) as first_at, MAX(created_at) as last_at
+        FROM corrections
+        WHERE profile_id = ?
+        GROUP BY table_key, field_key
+        ORDER BY count DESC
+    """, (profile_id,)).fetchall()
+    conn.close()
+    return [{"table_key": r[0], "field_key": r[1], "count": r[2],
+             "first_at": r[3], "last_at": r[4]} for r in rows]
+
+
+def get_correction_count_for_field(profile_id: int, table_key: str, field_key: str) -> int:
+    """Get number of corrections for a specific field."""
+    conn = _connect()
+    row = conn.execute("""
+        SELECT COUNT(*) FROM corrections
+        WHERE profile_id = ? AND table_key = ? AND field_key = ?
+    """, (profile_id, table_key, field_key)).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def save_learning_event(profile_id: int, event_type: str, event_data: str,
+                        trigger_correction_id: int = None,
+                        corrections_analyzed: int = 0) -> int:
+    """Record a learning event."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO learning_events (profile_id, event_type, event_data,
+            trigger_correction_id, corrections_analyzed)
+        VALUES (?, ?, ?, ?, ?)
+    """, (profile_id, event_type, event_data, trigger_correction_id, corrections_analyzed))
+    event_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return event_id
+
+
+def get_learning_events(profile_id: int = 1, limit: int = 50) -> list:
+    """Get learning events for a profile."""
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT id, profile_id, event_type, event_data,
+               trigger_correction_id, corrections_analyzed, created_at
+        FROM learning_events
+        WHERE profile_id = ?
+        ORDER BY created_at DESC LIMIT ?
+    """, (profile_id, limit)).fetchall()
+    conn.close()
+    return [{"id": r[0], "profile_id": r[1], "event_type": r[2],
+             "event_data": r[3], "trigger_correction_id": r[4],
+             "corrections_analyzed": r[5], "created_at": r[6]} for r in rows]
+
+
+# =============================================================================
+# GROUPS — RBAC
+# =============================================================================
+
+ALL_PERMISSIONS = {
+    "pages": {"agent": True, "history": True, "items": True, "declarations": True, "costs": True, "settings": True},
+    "actions": {"run_pipeline": True, "upload_pdf": True, "download_excel": True, "delete_jobs": True, "export_data": True},
+    "data_scope": "all_full",
+}
+
+DEFAULT_PERMISSIONS = {
+    "pages": {"agent": True, "history": True, "items": True, "declarations": True, "costs": True, "settings": False},
+    "actions": {"run_pipeline": True, "upload_pdf": True, "download_excel": True, "delete_jobs": False, "export_data": True},
+    "data_scope": "own",
+}
+
+
+def create_group(name: str, description: str = "", **kwargs) -> Optional[int]:
+    """Create a new group. Returns group id or None if name exists."""
+    conn = _connect()
+    cursor = conn.cursor()
+    try:
+        cols = ["name", "description"]
+        vals = [name, description]
+        for k in ["page_agent", "page_history", "page_items", "page_declarations",
+                   "page_costs", "page_settings", "action_run_pipeline", "action_upload_pdf",
+                   "action_download_excel", "action_delete_jobs", "action_export_data"]:
+            if k in kwargs:
+                cols.append(k)
+                vals.append(1 if kwargs[k] else 0)
+        if "data_scope" in kwargs:
+            cols.append("data_scope")
+            vals.append(kwargs["data_scope"])
+        placeholders = ",".join(["?"] * len(vals))
+        col_str = ",".join(cols)
+        cursor.execute(f"INSERT INTO groups ({col_str}) VALUES ({placeholders})", vals)
+        gid = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return gid
+    except sqlite3.IntegrityError:
+        conn.close()
+        return None
+
+
+def update_group(group_id: int, **kwargs):
+    """Update group fields."""
+    conn = _connect()
+    cursor = conn.cursor()
+    sets = []
+    vals = []
+    for k, v in kwargs.items():
+        if k in ["name", "description", "data_scope"]:
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        elif k.startswith("page_") or k.startswith("action_"):
+            sets.append(f"{k} = ?")
+            vals.append(1 if v else 0)
+    if sets:
+        vals.append(group_id)
+        cursor.execute(f"UPDATE groups SET {', '.join(sets)} WHERE id = ?", vals)
+    conn.commit()
+    conn.close()
+
+
+def delete_group(group_id: int) -> bool:
+    """Delete a group and its member assignments."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM user_groups WHERE group_id = ?", (group_id,))
+    cursor.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def get_all_groups() -> List[Dict]:
+    """Get all groups with member count."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT g.*, COUNT(ug.user_id) as member_count
+        FROM groups g
+        LEFT JOIN user_groups ug ON g.id = ug.group_id
+        GROUP BY g.id
+        ORDER BY g.name
+    """)
+    groups = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return groups
+
+
+def get_group(group_id: int) -> Optional[Dict]:
+    """Get a single group by ID."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM groups WHERE id = ?", (group_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_group_members(group_id: int) -> List[Dict]:
+    """Get all users in a group."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT u.id, u.username, u.display_name, u.email, u.role, u.keycloak_id
+        FROM users u
+        JOIN user_groups ug ON u.id = ug.user_id
+        WHERE ug.group_id = ?
+        ORDER BY u.username
+    """, (group_id,))
+    members = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return members
+
+
+def set_user_group(user_id: int, group_id: Optional[int], assigned_by: str = "admin"):
+    """Assign a user to a group. Pass group_id=None to remove from all groups."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM user_groups WHERE user_id = ?", (user_id,))
+    if group_id is not None:
+        cursor.execute(
+            "INSERT INTO user_groups (user_id, group_id, assigned_by) VALUES (?, ?, ?)",
+            (user_id, group_id, assigned_by),
+        )
+    conn.commit()
+    conn.close()
+
+
+def set_group_members(group_id: int, user_ids: List[int], assigned_by: str = "admin"):
+    """Set the full member list for a group (replace existing)."""
+    conn = _connect()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM user_groups WHERE group_id = ?", (group_id,))
+    for uid in user_ids:
+        cursor.execute(
+            "INSERT OR IGNORE INTO user_groups (user_id, group_id, assigned_by) VALUES (?, ?, ?)",
+            (uid, group_id, assigned_by),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_user_group(user_id: int) -> Optional[Dict]:
+    """Get the group a user belongs to (first group if multiple)."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT g.* FROM groups g
+        JOIN user_groups ug ON g.id = ug.group_id
+        WHERE ug.user_id = ?
+        LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_user_permissions(user: Dict) -> Dict:
+    """Get full permission dict for a user. Admin gets all permissions."""
+    if user.get("role") == "admin":
+        return ALL_PERMISSIONS
+
+    group = get_user_group(user["id"])
+    if group:
+        return {
+            "pages": {
+                "agent": bool(group["page_agent"]),
+                "history": bool(group["page_history"]),
+                "items": bool(group["page_items"]),
+                "declarations": bool(group["page_declarations"]),
+                "costs": bool(group["page_costs"]),
+                "settings": bool(group["page_settings"]),
+            },
+            "actions": {
+                "run_pipeline": bool(group["action_run_pipeline"]),
+                "upload_pdf": bool(group["action_upload_pdf"]),
+                "download_excel": bool(group["action_download_excel"]),
+                "delete_jobs": bool(group["action_delete_jobs"]),
+                "export_data": bool(group["action_export_data"]),
+            },
+            "data_scope": group.get("data_scope", "own"),
+        }
+
+    return DEFAULT_PERMISSIONS
+
+
+def get_all_users_with_groups() -> List[Dict]:
+    """Get all users with their group info."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT u.id, u.username, u.display_name, u.email, u.role, u.is_active,
+               u.keycloak_id, u.created_at, u.last_login,
+               g.id as group_id, g.name as group_name
+        FROM users u
+        LEFT JOIN user_groups ug ON u.id = ug.user_id
+        LEFT JOIN groups g ON ug.group_id = g.id
+        ORDER BY u.created_at
+    """)
+    users = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return users
+
+
+# =============================================================================
+# KEYCLOAK USER UPSERT
+# =============================================================================
+
+def upsert_keycloak_user(keycloak_id: str, username: str, display_name: str,
+                         email: str, role: str) -> Dict:
+    """
+    Insert or update a Keycloak user. Adopts existing local user if username matches.
+    Returns user dict with integer PK (preserves FK relationships).
+    """
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    # 1. Try to find by keycloak_id (existing Keycloak user)
+    cursor.execute("SELECT * FROM users WHERE keycloak_id = ?", (keycloak_id,))
+    user = cursor.fetchone()
+    if user:
+        cursor.execute("""
+            UPDATE users SET username = ?, display_name = ?, email = ?, role = ?,
+                             last_login = CURRENT_TIMESTAMP
+            WHERE keycloak_id = ?
+        """, (username, display_name, email, role, keycloak_id))
+        conn.commit()
+        user_dict = dict(user)
+        user_dict.update({"username": username, "display_name": display_name, "email": email, "role": role})
+        conn.close()
+        return user_dict
+
+    # 2. Try to adopt existing local user by username match
+    cursor.execute("SELECT * FROM users WHERE username = ? AND keycloak_id IS NULL", (username,))
+    user = cursor.fetchone()
+    if user:
+        cursor.execute("""
+            UPDATE users SET keycloak_id = ?, display_name = ?, email = ?, role = ?,
+                             last_login = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (keycloak_id, display_name, email, role, user["id"]))
+        conn.commit()
+        user_dict = dict(user)
+        user_dict.update({"keycloak_id": keycloak_id, "display_name": display_name, "email": email, "role": role})
+        conn.close()
+        return user_dict
+
+    # 3. Create new user
+    cursor.execute("""
+        INSERT INTO users (username, password_hash, display_name, role, keycloak_id, email, last_login)
+        VALUES (?, '', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (username, display_name, role, keycloak_id, email))
+    new_id = cursor.lastrowid
+    conn.commit()
+
+    cursor.execute("SELECT * FROM users WHERE id = ?", (new_id,))
+    user = cursor.fetchone()
+    user_dict = dict(user) if user else {"id": new_id, "username": username, "role": role, "display_name": display_name}
+    conn.close()
+    return user_dict
+
+
+# =============================================================================
+# PAGE EXTRACTIONS — v2 per-page structured data
+# =============================================================================
+
+def save_page_extractions(job_id: str, page_results: List[Dict]):
+    """Save v2 per-page extraction results."""
+    conn = _connect()
+    cursor = conn.cursor()
+
+    for pr in page_results:
+        parsed = pr.get("parsed", {})
+        doc = parsed.get("document", {})
+        visual = parsed.get("visual", {})
+        entities = parsed.get("entities", {})
+
+        cursor.execute("""
+            INSERT INTO page_extractions
+                (job_id, page_number, page_type, language, confidence, explanation,
+                 doc_title, doc_issuer, doc_date, doc_reference, doc_country,
+                 fields_json, items_json, amounts_json, entities_json,
+                 has_logo, has_stamp, has_signature, has_barcode, visual_quality,
+                 raw_char_count, orientation, pipeline_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
+        """, (
+            job_id,
+            pr.get("page_number", 0),
+            pr.get("page_type", "unknown"),
+            parsed.get("language", ""),
+            pr.get("confidence", 0),
+            pr.get("explanation", ""),
+            doc.get("title", ""),
+            doc.get("issuer", ""),
+            doc.get("date", ""),
+            doc.get("reference", ""),
+            doc.get("country", ""),
+            json.dumps(parsed.get("fields", {}), ensure_ascii=False, default=str),
+            json.dumps(parsed.get("items", []), ensure_ascii=False, default=str),
+            json.dumps(parsed.get("amounts", []), ensure_ascii=False, default=str),
+            json.dumps(entities, ensure_ascii=False, default=str),
+            1 if visual.get("has_logo") else 0,
+            1 if visual.get("has_stamp") else 0,
+            1 if visual.get("has_signature") else 0,
+            1 if visual.get("has_barcode") else 0,
+            visual.get("quality", ""),
+            pr.get("raw_char_count", 0),
+            pr.get("orientation", "portrait"),
+        ))
+
+    conn.commit()
+    conn.close()
+    print(f"  Saved {len(page_results)} page extractions for {job_id}")
+
+
+def get_page_extractions(job_id: str) -> List[Dict]:
+    """Get all page extractions for a job."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT * FROM page_extractions WHERE job_id = ? ORDER BY page_number
+    """, (job_id,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    for row in rows:
+        for jf in ('fields_json', 'items_json', 'amounts_json', 'entities_json'):
+            if row.get(jf):
+                try:
+                    row[jf.replace('_json', '')] = json.loads(row.pop(jf))
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    row[jf.replace('_json', '')] = {}
+                    del row[jf]
+            else:
+                row[jf.replace('_json', '')] = {} if 'fields' in jf or 'entities' in jf else []
+                if jf in row:
+                    del row[jf]
+    return rows
+
+
+def _normalize_importer(name: str) -> str:
+    """Normalize importer name for matching (strip suffixes, uppercase)."""
+    import re
+    n = str(name).upper().strip()
+    n = re.sub(r'\s*(CO\.,?\s*LTD\.?|COMPANY\s+LIMITED|PTE\s+LTD\.?|LTD\.?)\s*$', '', n).strip()
+    n = re.sub(r'\s+', ' ', n)
+    return n
+
+
+def get_importer_profile(importer_name: str) -> Optional[Dict]:
+    """Get learned profile for an importer."""
+    norm = _normalize_importer(importer_name)
+    if not norm:
+        return None
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM importer_profiles WHERE importer_name_normalized = ?", (norm,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_importer_profile(importer_name: str, currency: str = None,
+                            exchange_rate: float = None, consignor: str = None,
+                            items_summary: str = None):
+    """Update or create importer profile from completed job data."""
+    norm = _normalize_importer(importer_name)
+    if not norm:
+        return
+    conn = _connect()
+    existing = conn.execute(
+        "SELECT * FROM importer_profiles WHERE importer_name_normalized = ?", (norm,)
+    ).fetchone()
+
+    if existing:
+        # Update running stats
+        total_jobs = (existing[10] or 0) + 1  # total_jobs column
+        old_min = existing[5] or exchange_rate or 0
+        old_max = existing[6] or exchange_rate or 0
+        old_avg = existing[7] or exchange_rate or 0
+        new_min = min(old_min, exchange_rate) if exchange_rate else old_min
+        new_max = max(old_max, exchange_rate) if exchange_rate else old_max
+        new_avg = ((old_avg * (total_jobs - 1)) + (exchange_rate or old_avg)) / total_jobs
+
+        conn.execute("""
+            UPDATE importer_profiles SET
+                currency = COALESCE(?, currency),
+                exchange_rate_min = ?, exchange_rate_max = ?, exchange_rate_avg = ?,
+                common_consignor = COALESCE(?, common_consignor),
+                common_items = COALESCE(?, common_items),
+                total_jobs = ?,
+                last_job_date = datetime('now'),
+                updated_at = datetime('now')
+            WHERE importer_name_normalized = ?
+        """, (currency, new_min, new_max, round(new_avg, 4),
+              consignor, items_summary, total_jobs, norm))
+    else:
+        conn.execute("""
+            INSERT INTO importer_profiles
+                (importer_name, importer_name_normalized, currency,
+                 exchange_rate_min, exchange_rate_max, exchange_rate_avg,
+                 common_consignor, common_items, total_jobs, last_job_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+        """, (importer_name, norm, currency,
+              exchange_rate, exchange_rate, exchange_rate,
+              consignor, items_summary))
+
+    conn.commit()
+    conn.close()
+
+
+def update_field_accuracy(importer_name: str, field_key: str, was_corrected: bool = False):
+    """Track field accuracy per importer."""
+    norm = _normalize_importer(importer_name)
+    if not norm:
+        return
+    conn = _connect()
+    conn.execute("""
+        INSERT INTO field_accuracy (importer_name_normalized, field_key, total_extractions, corrections_count)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(importer_name_normalized, field_key)
+        DO UPDATE SET
+            total_extractions = total_extractions + 1,
+            corrections_count = corrections_count + ?,
+            last_correction_at = CASE WHEN ? THEN datetime('now') ELSE last_correction_at END
+    """, (norm, field_key, 1 if was_corrected else 0,
+          1 if was_corrected else 0, was_corrected))
+    conn.commit()
+    conn.close()
+
+
+def get_weak_fields(importer_name: str, min_error_rate: float = 0.3) -> List[str]:
+    """Get fields that have high error rate for an importer."""
+    norm = _normalize_importer(importer_name)
+    if not norm:
+        return []
+    conn = _connect()
+    rows = conn.execute("""
+        SELECT field_key, total_extractions, corrections_count
+        FROM field_accuracy
+        WHERE importer_name_normalized = ? AND total_extractions >= 2
+    """, (norm,)).fetchall()
+    conn.close()
+    weak = []
+    for field, total, corrections in rows:
+        if total > 0 and corrections / total >= min_error_rate:
+            weak.append(field)
+    return weak
+
+
+def save_value_audit(job_id: str, table_key: str, field_key: str,
+                     stage: str, old_value: str, new_value: str,
+                     source: str = "", item_index: int = None):
+    """Record a value change in the audit trail."""
+    conn = _connect()
+    conn.execute("""
+        INSERT INTO value_audit (job_id, table_key, field_key, item_index, stage, old_value, new_value, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (job_id, table_key, field_key, item_index, stage, str(old_value), str(new_value), source))
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":

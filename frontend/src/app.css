@@ -1,0 +1,185 @@
+@import 'tailwindcss';
+
+/* ============================================================
+   RO-ED COMMAND CENTER — Brutalist Design System
+   ============================================================ */
+
+/* --- Animations --- */
+@keyframes slideDown {
+  from { opacity: 0; max-height: 0; transform: translateY(-8px); overflow: hidden; }
+  to { opacity: 1; max-height: 2000px; transform: translateY(0); overflow: visible; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-slideDown {
+  animation: slideDown 0.3s ease-out forwards;
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* --- Custom Properties --- */
+:root {
+  --surface: #feffd6;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #fcf9ef;
+  --surface-container: #f6f4e9;
+  --surface-container-high: #f1eee3;
+  --surface-container-highest: #ebe8dd;
+  --on-surface: #383832;
+  --on-background: #383832;
+  --primary: #007518;
+  --primary-container: #00fc40;
+  --secondary: #006f7c;
+  --secondary-container: #26e6ff;
+  --tertiary: #9d4867;
+  --tertiary-container: #fe97b9;
+  --error: #be2d06;
+  --error-container: #f95630;
+  --outline: #828179;
+  --outline-variant: #bbb9b1;
+}
+
+/* --- Global Reset: Zero border-radius --- */
+* {
+  border-radius: 0px !important;
+}
+
+/* --- Selection color --- */
+::selection {
+  background: var(--primary);
+  color: white;
+}
+
+/* --- Font --- */
+body {
+  font-family: 'Space Grotesk', sans-serif;
+  background: var(--surface);
+  color: var(--on-surface);
+}
+
+/* --- Ink Border (asymmetric — heavier bottom/right) --- */
+.ink-border {
+  border-style: solid;
+  border-color: var(--on-background);
+  border-top-width: 2px;
+  border-left-width: 2px;
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+}
+
+/* --- Stamp Shadow (hard edge, no blur) --- */
+.stamp-shadow {
+  box-shadow: 4px 4px 0px 0px var(--on-background);
+}
+
+/* --- Dark Title Bar --- */
+.dark-bar {
+  padding: 8px 16px;
+  background: var(--on-surface);
+  color: var(--surface);
+  font-weight: 900;
+  text-transform: uppercase;
+  font-size: 0.875rem;
+}
+
+/* --- Tag Label --- */
+.tag-label {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  background: var(--on-surface);
+  color: var(--surface);
+}
+
+/* --- Custom Scrollbar --- */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: var(--surface-container);
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--on-surface);
+}
+
+/* --- Skeleton Loading --- */
+.skeleton {
+  background: var(--surface-container-highest);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.7; }
+}
+
+/* --- Section Stagger Animation --- */
+.section-animate > * {
+  opacity: 0;
+  animation: sectionFadeIn 0.4s ease-out forwards;
+}
+
+@keyframes sectionFadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.section-animate > *:nth-child(1) { animation-delay: 0.05s; }
+.section-animate > *:nth-child(2) { animation-delay: 0.15s; }
+.section-animate > *:nth-child(3) { animation-delay: 0.25s; }
+.section-animate > *:nth-child(4) { animation-delay: 0.35s; }
+.section-animate > *:nth-child(5) { animation-delay: 0.45s; }
+.section-animate > *:nth-child(6) { animation-delay: 0.55s; }
+.section-animate > *:nth-child(7) { animation-delay: 0.65s; }
+.section-animate > *:nth-child(8) { animation-delay: 0.75s; }
+.section-animate > *:nth-child(n+9) { animation-delay: 1.0s; }
+
+/* --- Toast Slide-In --- */
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+
+@keyframes slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* --- Button Press Effect --- */
+.press-effect:active {
+  transform: translate(2px, 2px);
+}
+
+/* --- Boot Sequence Spinner --- */
+.agent-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50% !important;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* --- Thinking Dots --- */
+.thinking-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50% !important;
+  animation: bounce 0.6s ease-in-out infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}

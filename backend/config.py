@@ -5,6 +5,7 @@ Centralized settings for all steps
 """
 
 import os
+import time
 from pathlib import Path
 
 # ============================================================================
@@ -17,10 +18,8 @@ BASE_DIR = Path(__file__).parent
 # PDF CONFIGURATION
 # ============================================================================
 
-# Update this path to your PDF file (or dynamically set by Streamlit app)
-# For Docker/Streamlit: Leave empty, will be set when file is uploaded
-# For CLI: Set to your local PDF path
-PDF_PATH = None  # Set dynamically by Streamlit on file upload
+# PDF path — set dynamically by WebSocket handler or CLI
+PDF_PATH = None
 
 # ============================================================================
 # API CONFIGURATION
@@ -42,7 +41,8 @@ if not API_KEY:
 # Validate API key at startup
 if not API_KEY or API_KEY == "sk-or-v1-your-openrouter-key-here":
     import logging
-    logging.warning("OPENROUTER_API_KEY not set or still placeholder — API calls will fail")
+    logging.error("CRITICAL: OPENROUTER_API_KEY not set or still placeholder — pipeline will fail")
+    # Don't crash on import (allows health check), but pipeline will fail at runtime
 
 # ============================================================================
 # MODEL CONFIGURATION
@@ -62,8 +62,13 @@ if not API_KEY or API_KEY == "sk-or-v1-your-openrouter-key-here":
 #   "anthropic/claude-3.5-sonnet"        — $3.00/$15.00 per M tokens (best for complex layouts)
 #   "anthropic/claude-sonnet-4-6"        — latest Claude, strongest vision
 
-OCR_MODEL = "google/gemini-3.1-flash-lite-preview"
-EXTRACTION_MODEL = "google/gemini-3.1-flash-lite-preview"
+OCR_MODEL = "google/gemini-3-flash-preview"
+EXTRACTION_MODEL = "google/gemini-3-flash-preview"
+
+# Per-step model override (None = use EXTRACTION_MODEL)
+VISION_MODEL = None                      # Uses EXTRACTION_MODEL (gemini-3-flash)
+ASSEMBLER_MODEL = None                   # Uses EXTRACTION_MODEL (gemini-3-flash)
+VERIFIER_MODEL = "anthropic/claude-sonnet-4-6"  # Premium — checks results against page images
 
 # ============================================================================
 # OUTPUT CONFIGURATION
@@ -79,42 +84,86 @@ UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
 # PROCESSING CONFIGURATION
 # ============================================================================
 
-# OCR resolution (2-3x recommended)
+# OCR resolution (used in step1_split adaptive resolution)
 OCR_RESOLUTION = 3
-
-# Extraction resolution
-EXTRACTION_RESOLUTION = 2
 
 # API timeout (seconds)
 API_TIMEOUT = 180
 
-# Rate limiting delay (seconds)
-RATE_LIMIT_DELAY = 1
-
 # ============================================================================
-# AGENTIC PIPELINE CONFIGURATION
+# PIPELINE CONFIGURATION
 # ============================================================================
 
 # Retry settings
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 2  # seconds (2, 4, 8)
 
-# Adaptive OCR: retry at higher resolution if chars extracted < threshold
-OCR_MIN_CHARS = 50
-OCR_HIRES_RESOLUTION = 5
+# Self-review model (can be same or different from extraction model)
+REVIEW_MODEL = "google/gemini-3-flash-preview"
 
-# Confidence threshold: fields below this are flagged for review
-CONFIDENCE_THRESHOLD = 0.7
 
-# Decision gate thresholds
-ACCURACY_ACCEPT = 90     # >= 90% → accept as-is
-ACCURACY_FIX = 60        # 60-89% → re-extract failed fields
-ACCURACY_RETRY = 30      # 30-59% → full re-extraction
-# < 30% → escalate to human review
 
-# Max agentic cycles
-MAX_FIX_CYCLES = 2       # max field-fix attempts
-MAX_FULL_RETRIES = 1     # max full re-extraction attempts
+# ============================================================================
+# KEYCLOAK CONFIGURATION (loaded from DB settings table, cached in memory)
+# ============================================================================
 
-# Self-review model (can be same or different)
-REVIEW_MODEL = "google/gemini-3.1-flash-lite-preview"
+_kc_cache = {"config": None, "ts": 0}
+_KC_CACHE_TTL = 60  # seconds
+
+
+def get_keycloak_config():
+    """
+    Returns Keycloak config from DB settings table (cached 60s).
+    Returns None if Keycloak is not enabled.
+    Env vars override DB settings if set.
+    """
+    global _kc_cache
+
+    if time.time() - _kc_cache["ts"] < _KC_CACHE_TTL and _kc_cache["config"] is not None:
+        return _kc_cache["config"]
+
+    # Env var override
+    env_realm = os.getenv("KEYCLOAK_REALM_URL", "")
+    if env_realm:
+        kc = {
+            "realm_url": env_realm,
+            "client_id": os.getenv("KEYCLOAK_CLIENT_ID", ""),
+            "client_secret": os.getenv("KEYCLOAK_CLIENT_SECRET", ""),
+            "admin_role": os.getenv("KEYCLOAK_ADMIN_ROLE", "admin"),
+            "jwks_url": f"{env_realm}/protocol/openid-connect/certs",
+            "token_url": f"{env_realm}/protocol/openid-connect/token",
+            "auth_url": f"{env_realm}/protocol/openid-connect/auth",
+            "logout_url": f"{env_realm}/protocol/openid-connect/logout",
+            "enabled": True,
+        }
+        _kc_cache.update({"config": kc, "ts": time.time()})
+        return kc
+
+    # Read from DB
+    import database
+    enabled = database.get_setting("keycloak_enabled")
+    if enabled != "true":
+        _kc_cache.update({"config": None, "ts": time.time()})
+        return None
+
+    realm_url = database.get_setting("keycloak_realm_url") or ""
+
+    kc = {
+        "realm_url": realm_url,
+        "client_id": database.get_setting("keycloak_client_id") or "",
+        "client_secret": database.get_setting("keycloak_client_secret") or "",
+        "admin_role": database.get_setting("keycloak_admin_role") or "admin",
+        "jwks_url": f"{realm_url}/protocol/openid-connect/certs",
+        "token_url": f"{realm_url}/protocol/openid-connect/token",
+        "auth_url": f"{realm_url}/protocol/openid-connect/auth",
+        "logout_url": f"{realm_url}/protocol/openid-connect/logout",
+        "enabled": True,
+    }
+    _kc_cache.update({"config": kc, "ts": time.time()})
+    return kc
+
+
+def invalidate_keycloak_cache():
+    """Called after settings save to force re-read from DB."""
+    global _kc_cache
+    _kc_cache = {"config": None, "ts": 0}

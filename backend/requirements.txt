@@ -1,20 +1,22 @@
 # PDF Processing
-PyMuPDF==1.23.8
+PyMuPDF>=1.23.0
 
 # API Communication
-requests==2.31.0
+requests>=2.31.0
 
 # Data Processing & Excel
-pandas==2.1.4
-openpyxl==3.1.2
-xlsxwriter==3.1.9
-
-# Web UI
-streamlit==1.31.1
-streamlit-shadcn-ui==0.1.19
-
-# Charts
-plotly==5.18.0
+pandas>=2.1.0
+openpyxl>=3.1.0
+xlsxwriter>=3.1.0
 
 # Security
-bcrypt==4.1.2
+bcrypt>=4.1.0
+
+# FastAPI Backend
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-jose[cryptography]>=3.3.0
+python-multipart>=0.0.18
+
+# Image Enhancement
+Pillow>=10.0.0
