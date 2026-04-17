@@ -43,7 +43,7 @@
       const res = await fetch(`/api/corrections/job/${job.job_id}`, {
         headers: { 'Authorization': `Bearer ${auth.token}` },
       });
-      if (res.ok) auditLog = await res.json();
+      if (res.ok) auditLog = await res.text().then(t => JSON.parse(t));
     } catch {}
   }
 
@@ -542,7 +542,7 @@
                 <div class="dark-bar flex justify-between items-center text-xs">
                   <div class="flex items-center gap-2">
                     <span>CUSTOMS_DECLARATION</span>
-                    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{itemConfAvg >= 0.8 ? '#22c55e' : itemConfAvg >= 0.5 ? '#eab308' : '#ef4444'};"></span>
+                    <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{( confidence?.summary?.average_confidence || 0.9) >= 0.8 ? '#22c55e' : (confidence?.summary?.average_confidence || 0.9) >= 0.5 ? '#eab308' : '#ef4444'};"></span>
                   </div>
                   <span class="px-2 py-0.5" style="background: var(--surface); color: var(--on-surface);">1 RECORD</span>
                 </div>

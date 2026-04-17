@@ -107,7 +107,7 @@ class AuthStore {
     // Fetch full user info with permissions
     try {
       const res = await fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${token}` } });
-      if (res.ok) this.user = await res.json();
+      if (res.ok) this.user = await res.text().then(t => JSON.parse(t));
     } catch {}
     this._persist();
   }
@@ -117,7 +117,7 @@ class AuthStore {
   async fetchAuthConfig(): Promise<void> {
     try {
       const res = await fetch('/api/auth/config');
-      const data = await res.json();
+      const data = await res.text().then(t => JSON.parse(t));
       this.authMode = data.mode;
       if (data.mode === 'keycloak') {
         this.oidcConfig = {
@@ -171,7 +171,7 @@ class AuthStore {
 
       if (!res.ok) return false;
 
-      const data = await res.json();
+      const data = await res.text().then(t => JSON.parse(t));
       this.token = data.access_token;
       this.refreshTokenValue = data.refresh_token || null;
       this.tokenExpiry = Date.now() + (data.expires_in || 300) * 1000;
@@ -194,7 +194,7 @@ class AuthStore {
           headers: { 'Authorization': `Bearer ${data.access_token}` },
         });
         if (meRes.ok) {
-          const me = await meRes.json();
+          const me = await meRes.text().then(t => JSON.parse(t));
           this.user = me;
         }
       } catch { /* payload user is good enough */ }
@@ -225,7 +225,7 @@ class AuthStore {
         return false;
       }
 
-      const data = await res.json();
+      const data = await res.text().then(t => JSON.parse(t));
       this.token = data.access_token;
       this.refreshTokenValue = data.refresh_token || this.refreshTokenValue;
       this.tokenExpiry = Date.now() + (data.expires_in || 300) * 1000;

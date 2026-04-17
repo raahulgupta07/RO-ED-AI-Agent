@@ -109,17 +109,23 @@
     return result;
   });
 
+  let detailError = $state('');
+
   async function openJob(jobId: string) {
     selectedJobId = jobId;
     loadingDetail = true;
+    detailError = '';
     pageDataLoaded = false;
     pageData = [];
     selectedPageDetail = null;
+
     try {
       selectedJob = await api.getJob(jobId);
       // Load page data in background
       api.getJobPages(jobId).then(p => { pageData = p; pageDataLoaded = true; }).catch(() => {});
-    } catch {}
+    } catch (e: any) {
+      detailError = e?.message || 'Failed to load job details';
+    }
     loadingDetail = false;
 
     const url = new URL(window.location.href);
@@ -272,6 +278,24 @@
     <div class="flex items-center gap-3 p-12 justify-center">
       <div class="agent-spinner" style="border-color: var(--secondary); border-top-color: transparent;"></div>
       <span class="text-sm font-bold uppercase" style="color: var(--on-surface);">LOADING...</span>
+    </div>
+  {:else if detailError}
+    <div class="flex flex-col items-center gap-4 p-12 justify-center">
+      <span class="material-symbols-outlined text-3xl" style="color: var(--tertiary);">error</span>
+      <span class="text-sm font-bold uppercase" style="color: var(--on-surface);">FAILED TO LOAD</span>
+      <span class="text-[10px] font-mono" style="color: var(--outline);">{detailError}</span>
+      <div class="flex gap-3">
+        <button class="text-[10px] font-bold uppercase px-3 py-2 border-2 cursor-pointer"
+          style="border-color: var(--primary); color: var(--primary); background: transparent;"
+          onclick={() => { if (selectedJobId) openJob(selectedJobId); }}>
+          RETRY
+        </button>
+        <button class="text-[10px] font-bold uppercase px-3 py-2 border-2 cursor-pointer"
+          style="border-color: var(--on-surface); color: var(--on-surface); background: transparent;"
+          onclick={backToList}>
+          BACK TO LIST
+        </button>
+      </div>
     </div>
   {:else if selectedJob}
     {@const acc = selectedJob.accuracy_percent ?? 0}

@@ -19,19 +19,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers['Content-Type'] = 'application/json';
   }
 
-  const res = await fetch(`${BASE}${path}`, { ...options, headers, redirect: 'manual' });
-
-  // Handle redirect (FastAPI trailing slash redirect strips auth header)
-  if (res.status === 307 || res.status === 308 || res.status === 301 || res.status === 302) {
-    const redirectUrl = res.headers.get('location');
-    if (redirectUrl) {
-      const retryRes = await fetch(redirectUrl, { ...options, headers });
-      if (retryRes.ok) return retryRes.json();
-      if (retryRes.status === 401) { auth.logout(); throw new Error('Unauthorized'); }
-      const err = await retryRes.json().catch(() => ({ detail: retryRes.statusText }));
-      throw new Error(err.detail || retryRes.statusText);
-    }
-  }
+  const res = await fetch(`${BASE}${path}`, { ...options, headers });
 
   if (res.status === 401) {
     // Try one refresh before giving up
@@ -40,7 +28,10 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
       if (refreshed) {
         headers['Authorization'] = `Bearer ${auth.token}`;
         const retry = await fetch(`${BASE}${path}`, { ...options, headers });
-        if (retry.ok) return retry.json();
+        if (retry.ok) {
+          const text = await retry.text();
+          return JSON.parse(text);
+        }
       }
     }
     auth.logout();
@@ -48,11 +39,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    const err = await res.text().then(t => { try { return JSON.parse(t); } catch { return { detail: res.statusText }; } });
     throw new Error(err.detail || res.statusText);
   }
 
-  return res.json();
+  // Use res.text() + JSON.parse() instead of res.json()
+  // res.json() hangs in some browsers when response body streaming stalls
+  const text = await res.text();
+  return JSON.parse(text);
 }
 
 export const api = {
@@ -62,10 +56,10 @@ export const api = {
 
   me: () => request<any>('/auth/me'),
 
-  getAuthConfig: () => fetch(`${BASE}/auth/config`).then(r => r.json()),
+  getAuthConfig: () => fetch(`${BASE}/auth/config`).then(r => r.text()).then(t => JSON.parse(t)),
 
   // Jobs
-  listJobs: (limit = 50) => request<any[]>(`/jobs?limit=${limit}`),
+  listJobs: (limit = 50) => request<any[]>(`/jobs/?limit=${limit}`),
   getJob: (jobId: string) => request<any>(`/jobs/${jobId}`),
   deleteJob: (jobId: string) => request<any>(`/jobs/${jobId}`, { method: 'DELETE' }),
   uploadPdf: (file: File) => {

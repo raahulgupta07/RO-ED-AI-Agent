@@ -143,3 +143,63 @@ docker-compose up -d --build
 - Don't mutate global state
 - Don't skip pages (data could be anywhere)
 - Don't use `json_object` mode (9x slower than `json_schema`)
+- Don't use `res.json()` in `api.ts` — use `res.text()` + `JSON.parse()` (see troubleshooting)
+- Don't use `{@const}` and reference it outside its block scope in Svelte
+- Don't mutate `$state` array entries in-place for view transitions — replace with new object
+
+## Known Issues & Troubleshooting
+
+### 1. `res.json()` hangs in browser (fetch returns 200 but body never arrives)
+
+**Symptom:** Page shows "LOADING..." forever. Server logs show `200 OK`. curl works fine.
+**Root cause:** Starlette's SPA middleware wraps API responses in a streaming proxy. In some browsers (confirmed Brave), `res.json()` hangs reading the response body stream even though headers arrive.
+**Fix:** In `api.ts`, always use `res.text()` + `JSON.parse()` instead of `res.json()`. This reads the body as a complete string first (more reliable), then parses.
+**How to diagnose:** Add `debugMsg` state + visible output showing fetch progress:
+```javascript
+debugMsg = 'calling fetch...';
+const res = await fetch(url, opts);
+debugMsg = `fetch done: ${res.status}`; // If stuck here → res.json() is the problem
+const text = await res.text();
+debugMsg = `text: ${text.length} chars`;
+```
+
+### 2. Svelte 5 `$derived` doesn't re-render after `$state` array mutation
+
+**Symptom:** Queue shows "DONE" but pipeline view stays visible. Counter shows wrong number.
+**Root cause:** `$derived(queue[selectedIndex])` returns the same object reference even after mutating its properties. Svelte 5 skips re-render if the derived value reference hasn't changed.
+**Fix:** Replace the array entry with a new object instead of mutating:
+```javascript
+// BAD: entry.status = 'done'; queue = [...queue];
+// GOOD: queue[idx] = { ...entry, status: 'done' }; queue = [...queue];
+```
+**Alternative:** Use explicit `$state` for view mode (`viewMode = 'results'`) instead of deriving from array entries. Simple strings always trigger re-render.
+
+### 3. `{@const}` scoping in Svelte 5
+
+**Symptom:** `ReferenceError: <variable> is not defined` in browser console.
+**Root cause:** `{@const}` is scoped to its enclosing `{#if}`, `{#each}`, or `{#snippet}` block. Using it outside that block causes a runtime crash.
+**Fix:** Either move the `{@const}` into the correct block, inline the expression, or use a `$derived` at the component script level.
+
+### 4. WebSocket data delivery vs HTTP fetch
+
+**Symptom:** After pipeline completes, results don't load (even though API works).
+**Root cause:** The separate HTTP `getJob()` call after pipeline completion hits issue #1.
+**Fix:** Send full `job_data` inline in the WebSocket `file_complete` message from `ws.py`. The frontend receives results directly — no HTTP call needed. Fallback to HTTP `getJob()` only if `msg.job_data` is null.
+
+### 5. FastAPI trailing slash redirects (307)
+
+**Symptom:** 401 Unauthorized on some API calls. Works in curl but not browser.
+**Root cause:** FastAPI routes with trailing slash (`/users/`) redirect requests without slash (`/users`) with 307. Browser strips `Authorization` header on redirect.
+**Fix:** Match frontend API paths exactly to backend route definitions (include trailing slash where defined).
+
+## Debugging Checklist
+
+When the UI shows "LOADING..." but server logs show 200:
+
+1. **Check browser console** for JavaScript errors (ReferenceError, TypeError)
+2. **Add debug state** to the loading template to show fetch progress
+3. **Check `api.ts`** — ensure using `res.text()` + `JSON.parse()`, NOT `res.json()`
+4. **Check Svelte reactivity** — are you mutating objects in-place? Replace with spread.
+5. **Check `{@const}` scope** — is it used outside its block?
+6. **Check WebSocket** — is `job_data` being sent and received?
+7. **Test with curl** — if curl works but browser doesn't, it's a body streaming issue

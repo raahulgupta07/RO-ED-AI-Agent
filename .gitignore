@@ -27,3 +27,6 @@ backend/frontend-build/
 
 # Backup
 *-BACKUP-*/
+.jwt_secret
+backend/data/extraction_history.db-shm
+backend/data/extraction_history.db-wal

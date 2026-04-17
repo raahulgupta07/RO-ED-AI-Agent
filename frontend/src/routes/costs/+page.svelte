@@ -130,11 +130,11 @@
   onMount(async () => {
     try {
       const res = await fetch('/api/data/cost-stats', { headers: { 'Authorization': `Bearer ${auth.token}` } });
-      if (res.ok) costStats = await res.json();
+      if (res.ok) costStats = await res.text().then(t => JSON.parse(t));
     } catch {}
     try {
       const res2 = await fetch('/api/jobs/', { headers: { 'Authorization': `Bearer ${auth.token}` } });
-      if (res2.ok) jobs = await res2.json();
+      if (res2.ok) jobs = await res2.text().then(t => JSON.parse(t));
       users = [...new Set(jobs.map((j: any) => j.username).filter(Boolean))];
     } catch {}
     loading = false;

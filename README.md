@@ -175,4 +175,24 @@ cd backend && python -m pipeline.pipeline /path/to/document.pdf
 
 ---
 
+## Troubleshooting
+
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| `res.json()` hangs | "LOADING..." forever, server logs 200 OK | Use `res.text()` + `JSON.parse()` in `api.ts` instead of `res.json()` |
+| Pipeline view stuck | Job shows DONE but results don't appear | Replace array entry with new object: `queue[i] = {...entry, status: 'done'}` |
+| `{@const}` crash | `ReferenceError: X is not defined` in console | `{@const}` is block-scoped — don't reference outside its `{#if}`/`{#each}` |
+| 401 on some routes | Works in curl, fails in browser | Match trailing slashes in API paths exactly (`/users/` not `/users`) |
+| Results not loading after pipeline | WebSocket completes but no tables shown | Check `ws.py` sends `job_data` in `file_complete` message |
+
+### Debug "LOADING..." Issues
+
+1. Open browser DevTools Console — check for red errors
+2. If no errors: add debug state to show fetch progress (see CLAUDE.md)
+3. If `fetch done: 200 OK` but stuck: body streaming issue → use `res.text()` + `JSON.parse()`
+4. If JavaScript error: fix the referenced variable/scope issue
+5. Test API with curl: `curl -s http://localhost:9000/api/jobs/ -H "Authorization: Bearer <token>"`
+
+---
+
 Created by **City AI Team** — City Holdings Myanmar

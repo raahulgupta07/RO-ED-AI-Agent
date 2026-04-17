@@ -59,6 +59,9 @@
   let agentLines = $state<{ text: string; type: string }[]>([]);
   let pipelineMode = $state('ro_ed');
 
+  // Explicit view mode — bypasses derived reactivity issues
+  let viewMode = $state<'idle' | 'pipeline' | 'results' | 'batch'>('idle');
+
   // ── Persist queue to localStorage (survives refresh, tab close, navigation) ──
   const QUEUE_KEY = 'ro_ed_agent_queue';
   const SEL_KEY = 'ro_ed_agent_sel';
@@ -130,7 +133,7 @@
       headers: { 'Authorization': `Bearer ${auth.token}` },
       body: form,
     });
-    const uploads: any[] = await res.json();
+    const uploads: any[] = await res.text().then(t => JSON.parse(t));
 
     for (let i = 0; i < uploads.length; i++) {
       const u = uploads[i];
@@ -175,6 +178,7 @@
     queue = [...queue];
 
     running = true;
+    viewMode = 'pipeline';
     batchSummary = null;
     pipelineSteps = [];
     terminalLogs = [];
@@ -198,7 +202,7 @@
       socket.send(JSON.stringify({ token: auth.token, files: filesPayload, mode: pipelineMode }));
     };
 
-    socket.onmessage = (event) => {
+    socket.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
 
       if (msg.error) {
@@ -211,6 +215,8 @@
         batchSummary = msg.summary;
         running = false;
         ws = null;
+        // Only switch to batch view if we don't already have results showing
+        if (viewMode === 'pipeline') viewMode = 'results';
         return;
       }
 
@@ -247,22 +253,13 @@
 
       // Job created — save jobId early so it survives navigation
       if (msg.job_created) {
-        entry.jobId = msg.job_id;
-        entry.status = 'processing';
+        queue[queueIdx] = { ...entry, jobId: msg.job_id, status: 'processing' };
         queue = [...queue];
         return;
       }
 
       // File complete
       if (msg.file_complete) {
-        entry.status = msg.status === 'done' ? 'done' : msg.status === 'stopped' ? 'stopped' : 'error';
-        entry.jobId = msg.job_id || '';
-        entry.accuracy = msg.accuracy || 0;
-        entry.itemsCount = msg.items_count || 0;
-        entry.cost = msg.cost || 0;
-        entry.duration = msg.duration || 0;
-        entry.gateLog = msg.gate_log || [];
-        entry.progress = 100;
         terminalComplete = true;
         vizSummary = {
           items: msg.items_count || 0, accuracy: msg.accuracy || 0,
@@ -280,21 +277,46 @@
           pipelineMode: msg.pipeline_mode || pipelineMode,
           crossValidation: msg.cross_validation || null,
         };
+
+        // Replace entry with NEW object (forces $derived to detect change)
+        queue[queueIdx] = {
+          ...entry,
+          status: msg.status === 'done' ? 'done' : msg.status === 'stopped' ? 'stopped' : 'error',
+          jobId: msg.job_id || '',
+          accuracy: msg.accuracy || 0,
+          itemsCount: msg.items_count || 0,
+          cost: msg.cost || 0,
+          duration: msg.duration || 0,
+          gateLog: msg.gate_log || [],
+          progress: 100,
+        };
         queue = [...queue];
 
         // Auto-select completed file and load results
         if (msg.job_id) {
           selectedIndex = queueIdx;
-          loadJobResult(msg.job_id);
+          // Use inline job data from WebSocket (avoids separate HTTP fetch)
+          if (msg.job_data) {
+            jobResults[msg.job_id] = msg.job_data;
+            jobResults = { ...jobResults };
+            loadingResult = false;
+            viewMode = 'results';
+          } else {
+            loadJobResult(msg.job_id);
+            viewMode = 'results';
+          }
         }
         return;
       }
 
       // Step progress → build terminal steps + visualizer
       if (msg.step) {
-        entry.status = 'processing';
-        entry.stepLabel = `${msg.name} ${msg.status === 'done' ? '✓' : '...'}`;
-        entry.progress = (msg.step / 10) * 100;
+        queue[queueIdx] = {
+          ...entry,
+          status: 'processing',
+          stepLabel: `${msg.name} ${msg.status === 'done' ? '✓' : '...'}`,
+          progress: (msg.step / 10) * 100,
+        };
         queue = [...queue];
         selectedIndex = queueIdx;
 
@@ -423,14 +445,32 @@
   }
 
   // ── Load job results ──
+  let loadError = $state('');
+
   async function loadJobResult(jobId: string) {
-    if (jobResults[jobId]) return;
+    if (jobResults[jobId]) { loadingResult = false; return; }
     loadingResult = true;
-    try {
-      const job = await api.getJob(jobId);
-      jobResults[jobId] = job;
-      jobResults = { ...jobResults };
-    } catch {}
+    loadError = '';
+
+    // Retry up to 3 times with increasing delay
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const job = await api.getJob(jobId);
+        if (job) {
+          jobResults[jobId] = job;
+          jobResults = { ...jobResults };
+          loadingResult = false;
+          return;
+        }
+      } catch (e: any) {
+        console.error(`loadJobResult attempt ${attempt}/3 failed:`, e?.message || e);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, attempt * 1000)); // 1s, 2s delay
+        } else {
+          loadError = e?.message || 'Failed to load results';
+        }
+      }
+    }
     loadingResult = false;
   }
 
@@ -439,6 +479,13 @@
     selectedIndex = idx;
     pipelineSteps = [];
     const entry = queue[idx];
+    if (entry?.status === 'done' || entry?.status === 'error') {
+      viewMode = 'results';
+    } else if (entry?.status === 'processing') {
+      viewMode = 'pipeline';
+    } else {
+      viewMode = 'idle';
+    }
     if (entry?.jobId) loadJobResult(entry.jobId);
     if (entry?.existingJob?.job_id) loadJobResult(entry.existingJob.job_id);
   }
@@ -567,7 +614,7 @@
         headers: { 'Authorization': `Bearer ${auth.token}` },
       });
       if (res.ok) {
-        const processing = await res.json();
+        const processing = await res.text().then(t => JSON.parse(t));
         if (processing.length > 0) {
           for (const job of processing) {
             queue.push({
@@ -615,6 +662,7 @@
     batchSummary = null;
     jobResults = {};
     terminalLogs = [];
+    viewMode = 'idle';
   }
 </script>
 
@@ -839,11 +887,11 @@
 
     <!-- ═══════════ RIGHT PANEL ═══════════ -->
     <div style="min-width: 0; overflow-x: hidden;">
-      {#if selectedFile?.status === 'processing'}
+      {#if viewMode === 'pipeline'}
         <!-- Pipeline progress for current file -->
         <div class="mb-4 flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-bold uppercase" style="color: var(--on-surface);">Processing: {selectedFile.filename}</span>
+            <span class="text-xs font-bold uppercase" style="color: var(--on-surface);">Processing: {selectedFile?.filename ?? ''}</span>
             <Badge text="RUNNING" variant="secondary" />
             <Badge text="RO-ED AI" variant="success" />
           </div>
@@ -860,7 +908,7 @@
           <div class="mb-3">
             <PipelineVisualizer
               bind:steps={vizSteps}
-              filename={selectedFile.filename}
+              filename={selectedFile?.filename ?? ''}
               complete={terminalComplete}
               summary={vizSummary}
             />
@@ -869,18 +917,37 @@
 
         <!-- Detailed CLI Terminal -->
         <AgentTerminal
-          filename={selectedFile.filename}
+          filename={selectedFile?.filename ?? ''}
           lines={agentLines}
           running={running}
           summary={terminalSummary}
         />
 
-      {:else if selectedJob || loadingResult}
+      {:else if viewMode === 'results' || selectedJob || loadingResult || loadError}
         <!-- Results for selected file -->
-        {#if loadingResult}
-          <div class="flex items-center gap-3 p-12 justify-center">
+        {#if loadError && !selectedJob}
+          <div class="flex flex-col items-center gap-4 p-12 justify-center">
+            <span class="material-symbols-outlined text-3xl" style="color: var(--tertiary);">error</span>
+            <span class="text-sm font-bold uppercase" style="color: var(--on-surface);">FAILED TO LOAD RESULTS</span>
+            <span class="text-[10px] font-mono" style="color: var(--outline);">{loadError}</span>
+            <div class="flex gap-3">
+              {#if selectedFile?.jobId}
+                <button class="text-[10px] font-bold uppercase px-3 py-2 border-2 cursor-pointer"
+                  style="border-color: var(--primary); color: var(--primary); background: transparent;"
+                  onclick={() => { loadError = ''; loadJobResult(selectedFile.jobId); }}>
+                  RETRY
+                </button>
+                <a href="/history?job={selectedFile.jobId}" class="text-[10px] font-bold uppercase no-underline px-3 py-2 border-2"
+                  style="border-color: var(--on-surface); color: var(--on-surface);">
+                  VIEW IN HISTORY →
+                </a>
+              {/if}
+            </div>
+          </div>
+        {:else if loadingResult && !selectedJob}
+          <div class="flex flex-col items-center gap-4 p-12 justify-center">
             <div class="agent-spinner" style="border-color: var(--secondary); border-top-color: transparent;"></div>
-            <span class="text-sm font-bold uppercase" style="color: var(--on-surface);">LOADING...</span>
+            <span class="text-sm font-bold uppercase" style="color: var(--on-surface);">LOADING RESULTS...</span>
           </div>
         {:else if selectedJob}
           <ResultAccordion job={selectedJob} defaultOpen={true}

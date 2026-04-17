@@ -123,8 +123,12 @@ async def run_batch(ws: WebSocket):
                 try:
                     conn = database._connect()
                     conn.execute("UPDATE jobs SET pipeline_version='ro-ed', total_pages=? WHERE job_id=?", (total_pages, job_id))
-                    conn.commit(); conn.close()
-                except Exception: pass
+                    conn.commit()
+                except Exception:
+                    pass
+                finally:
+                    try: conn.close()
+                    except Exception: pass
 
                 await step(1, "HD_SPLITTER", "done", f"{total_pages} HD pages at 300 DPI")
 
@@ -312,12 +316,24 @@ async def run_batch(ws: WebSocket):
                 completed += 1; total_cost += file_cost; total_items += len(items)
                 accuracies.append(accuracy); job_ids.append(job_id)
 
+                # Send job result data inline to avoid separate HTTP fetch
+                try:
+                    job_data = database.get_job_details(job_id)
+                    # Remove non-serializable / unnecessary fields
+                    if job_data:
+                        job_data.pop('pdf_path', None)
+                        job_data.pop('cross_validation_json', None)
+                        job_data.pop('pipeline_version', None)
+                except Exception:
+                    job_data = None
+
                 await send({"file_index": file_idx, "file_complete": True, "status": "done",
                              "job_id": job_id, "filename": filename,
                              "accuracy": accuracy, "items_count": len(items),
                              "duration": round(file_duration, 1), "cost": round(file_cost, 4),
                              "gate_log": [f"ro-ed: {accuracy:.1f}%, {len(items)} items"],
-                             "pipeline_mode": "ro_ed"})
+                             "pipeline_mode": "ro_ed",
+                             "job_data": job_data})
 
             except Exception as e:
                 failed += 1
